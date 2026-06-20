@@ -123,7 +123,8 @@ async def poll_loop() -> None:
 @asynccontextmanager
 async def lifespan(app: Starlette):
     task = asyncio.create_task(poll_loop())
-    log.info("Sushi started — Core: %s  PM3: %s", doppelganger.base_url, config.pm3_device)
+    log.info("Sushi started — Core: %s  PM3: %s  binary: %s",
+             doppelganger.base_url, config.pm3_device, proxmark.binary or "NOT FOUND")
     yield
     task.cancel()
     await doppelganger.close()
@@ -151,6 +152,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
         "cards": cards,
         "emulating": proxmark.is_emulating,
         "emulating_card": proxmark.emulating_card,
+        "pm3_binary": proxmark.binary,
     }))
 
     try:
@@ -188,9 +190,13 @@ async def _handle(data: dict) -> None:
         seen_ids.clear()
         await broadcast({"type": "seen_cleared"})
 
+    elif action == "detect_pm3":
+        binary = proxmark.redetect()
+        await broadcast({"type": "pm3_detected", "binary": binary, "found": bool(binary)})
+
     elif action == "ping_proxmark":
         ok = await proxmark.ping()
-        await broadcast({"type": "pm3_ping", "connected": ok})
+        await broadcast({"type": "pm3_ping", "connected": ok, "binary": proxmark.binary})
 
     elif action == "scan_network":
         await broadcast({"type": "scan_started", "target": "core"})

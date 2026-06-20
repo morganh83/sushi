@@ -78,6 +78,57 @@ Doppelganger Core  ──WiFi──>  [Sushi backend]  ──TCP──>  Communi
 
 ---
 
+## Proxmark3 setup (RDV4 + Blueshark)
+
+The version of Proxmark3 in the Termux package manager (`pkg install proxmark3`) is typically outdated and may not be compiled correctly for the RDV4. You need the **iceman fork** (RfidResearchGroup/proxmark3), which is the actively maintained version with full RDV4 + Blueshark support.
+
+**1. Remove the package manager version if installed**
+
+```bash
+pkg uninstall proxmark3
+```
+
+**2. Install build dependencies**
+
+```bash
+pkg install git clang make cmake python libc++
+```
+
+**3. Clone the iceman fork**
+
+```bash
+git clone https://github.com/RfidResearchGroup/proxmark3.git ~/proxmark3
+cd ~/proxmark3
+```
+
+**4. Build for RDV4**
+
+RDV4 is the default platform in the iceman fork, so no special flags are needed:
+
+```bash
+make -j$(nproc)
+```
+
+This takes several minutes on a phone.
+
+**5. Make `pm3` available in PATH**
+
+```bash
+ln -s ~/proxmark3/pm3 $PREFIX/bin/pm3
+```
+
+Verify it works (with Communication Bridge Pro connected):
+
+```bash
+pm3 -p tcp:localhost:4321 -c "hw version"
+```
+
+You should see the Proxmark3 RDV4 firmware version in the output. If it connects and shows device info, Sushi will work.
+
+> **Note on the TCP port format:** The iceman fork uses `tcp:localhost:4321` (single colon, no `//`). This is the default in Sushi's settings.
+
+---
+
 ## Installation
 
 ### Android (Termux)

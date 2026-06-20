@@ -6,18 +6,18 @@ CONFIG_FILE = Path(__file__).parent / "sushi_config.json"
 DEFAULTS: dict = {
     "doppelganger_ip": "192.168.4.1",
     "doppelganger_port": 80,
-    "pm3_device": "tcp://localhost:4321",
-    "pm3_path": "pm3",
+    "pm3_device": "tcp:localhost:4321",   # CBP default port, no double-slash
+    "pm3_device_type": "rdv4_bt",         # rdv4_bt | rdv4 | rdv3 | generic
     "auto_clone": False,
-    "clone_mode": "emulate",       # "write" or "emulate"
+    "clone_mode": "emulate",
     "poll_interval": 1.0,
-    "reader_mode": "hid",          # "hid" or "paxton"
+    "reader_mode": "hid",
     "server_port": 8080,
 }
 
 ALLOWED_UPDATES = {
     "auto_clone", "clone_mode", "doppelganger_ip", "doppelganger_port",
-    "pm3_device", "pm3_path", "poll_interval", "reader_mode",
+    "pm3_device", "pm3_device_type", "poll_interval", "reader_mode",
 }
 
 

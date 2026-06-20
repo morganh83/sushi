@@ -207,15 +207,27 @@ body{background:var(--bg);color:var(--txt);font-family:'Courier New',monospace;f
 
     <!-- PM3 settings -->
     <div class="fg">
-      <label class="fl">PM3 Device / Port</label>
-      <input class="fi" id="cfg-dev" type="text" placeholder="tcp://localhost:4321">
-      <div class="fh">TCP port that Communication Bridge Pro exposes, e.g. tcp://localhost:4321. Start CBP and connect to Blueshark before launching pm3.</div>
+      <label class="fl">Proxmark3 Device Type</label>
+      <select class="fi" id="cfg-dev-type">
+        <option value="rdv4_bt">RDV4 + Blueshark (BT via CBP)</option>
+        <option value="rdv4">RDV4 (USB)</option>
+        <option value="rdv3">RDV3 / Generic</option>
+      </select>
     </div>
 
     <div class="fg">
-      <label class="fl">PM3 Binary Path</label>
-      <input class="fi" id="cfg-pm3" type="text" placeholder="pm3">
-      <div class="fh">Full path only if pm3 is not in your Termux PATH.</div>
+      <label class="fl">CBP TCP Port</label>
+      <input class="fi" id="cfg-dev" type="text" placeholder="tcp:localhost:4321" inputmode="url">
+      <div class="fh">Port Communication Bridge Pro exposes. Default: tcp:localhost:4321 (no double-slash). Start CBP and connect to Blueshark first.</div>
+    </div>
+
+    <div class="fg">
+      <label class="fl">PM3 Binary</label>
+      <div style="display:flex;gap:6px;align-items:center">
+        <span id="pm3-binary-status" style="flex:1;font-size:12px;padding:9px 11px;background:var(--s2);border:1px solid var(--border);border-radius:6px;color:var(--txt3)">checking…</span>
+        <button class="test-btn" onclick="detectPm3()" style="width:auto;margin:0;padding:8px 12px;white-space:nowrap">Re-detect</button>
+      </div>
+      <div class="fh">Sushi looks for <code style="color:var(--green)">pm3</code> then <code style="color:var(--green)">proxmark3</code> in PATH. See README for how to install the correct version for RDV4.</div>
     </div>
 
     <div class="fg">
@@ -263,6 +275,7 @@ function handle(m) {
       updateCards(m.cards||[], []);
       emulCard = m.emulating_card;
       syncEmul();
+      showBinary(m.pm3_binary||'');
       break;
     case 'status':
       setDot('dot-dg', m.doppelganger === 'connected');
@@ -289,9 +302,14 @@ function handle(m) {
     case 'emulation_stopped': emulCard = null; syncEmul(); addLog('Emulation stopped','in'); break;
     case 'config_updated': applyConfig(m.config); break;
     case 'seen_cleared': newIds.clear(); render(); addLog('New markers reset','in'); break;
+    case 'pm3_detected':
+      showBinary(m.binary||'');
+      addLog(m.found ? `PM3 binary: ${m.binary}` : 'PM3 binary not found — install pm3 or proxmark3', m.found?'ok':'er');
+      break;
     case 'pm3_ping': case 'pm3_test': {
       const ok = m.connected??m.success;
       setDot('dot-pm3', ok);
+      if (m.binary) showBinary(m.binary);
       addLog(`PM3 test: ${ok?'OK ✓':'FAIL ✗'} ${(m.output||'').split('\n')[0]||''}`, ok?'ok':'er');
       break;
     }
@@ -364,6 +382,21 @@ function clone(card, m) { send({action:'clone', card, mode: m}); }
 function stopEmul()    { send({action:'stop_emulation'}); }
 function clearSeen()   { send({action:'clear_seen'}); }
 function testPm3()     { send({action:'ping_proxmark'}); addLog('Testing PM3…','in'); }
+function detectPm3()   { send({action:'detect_pm3'}); addLog('Searching for pm3/proxmark3 in PATH…','in'); }
+
+function showBinary(name) {
+  const el = document.getElementById('pm3-binary-status');
+  if (!el) return;
+  if (name) {
+    el.textContent = `Found: ${name}`;
+    el.style.color = 'var(--green)';
+    el.style.borderColor = 'var(--green-m)';
+  } else {
+    el.textContent = 'Not found — install pm3 or proxmark3';
+    el.style.color = 'var(--red)';
+    el.style.borderColor = 'var(--red)';
+  }
+}
 
 function scanNetwork() {
   send({action:'scan_network'});
@@ -426,10 +459,11 @@ function applyConfig(cfg) {
   mode = cfg.clone_mode || 'emulate';
   document.getElementById('m-emul').classList.toggle('act', mode==='emulate');
   document.getElementById('m-write').classList.toggle('act', mode==='write');
-  document.getElementById('cfg-ip').value   = cfg.doppelganger_ip || '';
-  document.getElementById('cfg-dev').value  = cfg.pm3_device || '';
-  document.getElementById('cfg-pm3').value  = cfg.pm3_path || '';
-  document.getElementById('cfg-poll').value = cfg.poll_interval || 1;
+  document.getElementById('cfg-ip').value       = cfg.doppelganger_ip || '';
+  document.getElementById('cfg-dev').value      = cfg.pm3_device || '';
+  document.getElementById('cfg-poll').value     = cfg.poll_interval || 1;
+  const dt = document.getElementById('cfg-dev-type');
+  if (dt) dt.value = cfg.pm3_device_type || 'rdv4_bt';
 }
 
 function openSettings()  { document.getElementById('modal').classList.add('open'); }
@@ -437,10 +471,10 @@ function closeSettings() { document.getElementById('modal').classList.remove('op
 
 function saveSettings() {
   send({action:'update_config', data:{
-    doppelganger_ip: document.getElementById('cfg-ip').value.trim(),
-    pm3_device:      document.getElementById('cfg-dev').value.trim(),
-    pm3_path:        document.getElementById('cfg-pm3').value.trim(),
-    poll_interval:   parseFloat(document.getElementById('cfg-poll').value)||1,
+    doppelganger_ip:  document.getElementById('cfg-ip').value.trim(),
+    pm3_device:       document.getElementById('cfg-dev').value.trim(),
+    pm3_device_type:  document.getElementById('cfg-dev-type').value,
+    poll_interval:    parseFloat(document.getElementById('cfg-poll').value)||1,
   }});
   closeSettings();
   toast('Settings saved','ok');
