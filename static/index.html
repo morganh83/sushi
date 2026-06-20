@@ -164,6 +164,8 @@ body{background:var(--bg);color:var(--txt);font-family:'Courier New',monospace;f
   </div>
 
   <button class="stop-btn" id="stop-btn" onclick="stopEmul()">&#9632; Stop</button>
+  <button class="stop-btn" id="pm3-conn-btn" style="border-color:var(--blue);color:var(--blue)" onclick="connectPm3()">&#9679; Connect PM3</button>
+  <button class="stop-btn" id="pm3-disc-btn" style="display:none;border-color:var(--txt3);color:var(--txt3)" onclick="disconnectPm3()">&#9632; PM3</button>
 </div>
 
 <!-- Main -->
@@ -227,7 +229,21 @@ body{background:var(--bg);color:var(--txt);font-family:'Courier New',monospace;f
         <span id="pm3-binary-status" style="flex:1;font-size:12px;padding:9px 11px;background:var(--s2);border:1px solid var(--border);border-radius:6px;color:var(--txt3)">checking…</span>
         <button class="test-btn" onclick="detectPm3()" style="width:auto;margin:0;padding:8px 12px;white-space:nowrap">Re-detect</button>
       </div>
-      <div class="fh">Sushi looks for <code style="color:var(--green)">pm3</code> then <code style="color:var(--green)">proxmark3</code> in PATH. See README for how to install the correct version for RDV4.</div>
+      <div class="fh">Sushi looks for <code style="color:var(--green)">pm3</code> then <code style="color:var(--green)">proxmark3</code> in PATH.</div>
+    </div>
+
+    <div class="fg">
+      <label class="fl">PM3 Client Version</label>
+      <pre id="pm3-version-out" style="background:var(--s2);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-size:10px;color:var(--txt2);max-height:80px;overflow-y:auto;white-space:pre-wrap;word-break:break-all">tap Check Version</pre>
+      <button class="test-btn" onclick="checkPm3Version()" style="margin-top:4px">Check Version</button>
+      <div class="fh">If this shows an old or unrecognised version, use Install below to get the iceman fork (RDV4 support).</div>
+    </div>
+
+    <div class="fg">
+      <label class="fl">Install Iceman Fork (RfidResearchGroup)</label>
+      <div class="fh" style="margin-bottom:6px">Clones and builds the latest iceman fork from source for RDV4. Takes 10&ndash;30 minutes. Replaces any existing pkg version.</div>
+      <button class="test-btn" id="install-btn" onclick="installPm3()" style="border-color:var(--orange);color:var(--orange)">Install from source</button>
+      <pre id="install-log" style="display:none;margin-top:8px;background:var(--s2);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-size:10px;color:var(--txt2);max-height:200px;overflow-y:auto;white-space:pre-wrap;word-break:break-all"></pre>
     </div>
 
     <div class="fg">
@@ -276,12 +292,13 @@ function handle(m) {
       emulCard = m.emulating_card;
       syncEmul();
       showBinary(m.pm3_binary||'');
-      if (m.pm3_binary) send({action:'ping_proxmark'});
+      syncPm3(m.pm3_connected||false);
       break;
     case 'status':
       setDot('dot-dg', m.doppelganger === 'connected');
       if (m.cards !== undefined) updateCards(m.cards, m.new_cards||[]);
       emulCard = m.emulating_card;
+      syncPm3(m.pm3_connected||false);
       syncEmul();
       if (m.error) addLog(m.error,'er');
       break;
@@ -303,10 +320,49 @@ function handle(m) {
     case 'emulation_stopped': emulCard = null; syncEmul(); addLog('Emulation stopped','in'); break;
     case 'config_updated': applyConfig(m.config); break;
     case 'seen_cleared': newIds.clear(); render(); addLog('New markers reset','in'); break;
+    case 'pm3_connecting':
+      addLog('Connecting to PM3…','in');
+      setDot('dot-pm3', null);
+      break;
+    case 'pm3_connect_result':
+      syncPm3(m.connected);
+      showBinary(m.binary||'');
+      if (m.connected) {
+        addLog('PM3 connected','ok');
+        toast('PM3 connected','ok');
+      } else {
+        addLog(`PM3 connect failed: ${m.error}`,'er');
+        toast('PM3 connect failed','er');
+      }
+      break;
+    case 'pm3_disconnected':
+      syncPm3(false);
+      addLog('PM3 disconnected','wn');
+      break;
     case 'pm3_detected':
       showBinary(m.binary||'');
       addLog(m.found ? `PM3 binary: ${m.binary}` : 'PM3 binary not found — install pm3 or proxmark3', m.found?'ok':'er');
       break;
+    case 'pm3_version_result': {
+      const el = document.getElementById('pm3-version-out');
+      if (el) el.textContent = m.version || '(no output)';
+      showBinary(m.binary||'');
+      break;
+    }
+    case 'install_log': {
+      const log_el = document.getElementById('install-log');
+      if (log_el) {
+        log_el.style.display = '';
+        log_el.textContent += m.line + '\n';
+        log_el.scrollTop = log_el.scrollHeight;
+      }
+      if (m.done) {
+        const btn = document.getElementById('install-btn');
+        if (btn) { btn.disabled = false; btn.textContent = 'Install from source'; }
+        addLog(m.success ? 'PM3 install complete ✓' : 'PM3 install failed ✗', m.success?'ok':'er');
+      }
+      break;
+    }
     case 'pm3_ping': case 'pm3_test': {
       const ok = m.connected??m.success;
       setDot('dot-pm3', ok);
@@ -397,6 +453,29 @@ function showBinary(name) {
     el.style.color = 'var(--red)';
     el.style.borderColor = 'var(--red)';
   }
+}
+
+function connectPm3() {
+  send({action:'connect_pm3'});
+  setDot('dot-pm3', null);
+  const btn = document.getElementById('pm3-conn-btn');
+  if (btn) btn.textContent = '… Connecting';
+}
+function disconnectPm3() { send({action:'disconnect_pm3'}); }
+function checkPm3Version() { send({action:'pm3_version'}); }
+function installPm3() {
+  const btn = document.getElementById('install-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Installing…'; }
+  const lg = document.getElementById('install-log');
+  if (lg) { lg.textContent = ''; lg.style.display = ''; }
+  send({action:'install_pm3'});
+}
+
+function syncPm3(connected) {
+  setDot('dot-pm3', !!connected);
+  document.getElementById('pm3-conn-btn').style.display = connected ? 'none' : '';
+  document.getElementById('pm3-conn-btn').textContent = '● Connect PM3';
+  document.getElementById('pm3-disc-btn').style.display = connected ? '' : 'none';
 }
 
 function scanNetwork() {

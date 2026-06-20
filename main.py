@@ -5,11 +5,12 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from starlette.applications import Starlette
-from starlette.responses import FileResponse, HTMLResponse
+from starlette.responses import FileResponse
 from starlette.routing import Mount, Route, WebSocketRoute
 from starlette.staticfiles import StaticFiles
 from starlette.websockets import WebSocket, WebSocketDisconnect
@@ -83,6 +84,13 @@ async def do_clone(card: dict, mode: str) -> None:
 
 async def poll_loop() -> None:
     while True:
+        # Check if pm3 process died since last poll
+        was_connected = proxmark._connected
+        still_alive = proxmark.check_alive()
+        if was_connected and not still_alive:
+            log.warning("PM3 session died — waiting for reconnect")
+            await broadcast({"type": "pm3_disconnected"})
+
         try:
             cards = await doppelganger.get_cards()
             new_cards = [c for c in cards if c.get("id") and c["id"] not in seen_ids]
@@ -96,6 +104,7 @@ async def poll_loop() -> None:
                 "cards": cards,
                 "emulating": proxmark.is_emulating,
                 "emulating_card": proxmark.emulating_card,
+                "pm3_connected": proxmark.is_connected,
             }
             if new_cards:
                 event["new_cards"] = new_cards
@@ -111,6 +120,7 @@ async def poll_loop() -> None:
                 "type": "status",
                 "doppelganger": "disconnected",
                 "error": str(e),
+                "pm3_connected": proxmark.is_connected,
             })
         except Exception as e:
             log.error("Poll error: %s", e)
@@ -129,6 +139,7 @@ async def lifespan(app: Starlette):
     task.cancel()
     await doppelganger.close()
     await proxmark.stop_emulation()
+    await proxmark.disconnect()
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────
@@ -153,6 +164,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
         "emulating": proxmark.is_emulating,
         "emulating_card": proxmark.emulating_card,
         "pm3_binary": proxmark.binary,
+        "pm3_connected": proxmark.is_connected,
     }))
 
     try:
@@ -181,6 +193,20 @@ async def _handle(data: dict) -> None:
         result = await proxmark.stop_emulation()
         await broadcast({"type": "emulation_stopped", **result})
 
+    elif action == "connect_pm3":
+        await broadcast({"type": "pm3_connecting"})
+        result = await proxmark.connect()
+        await broadcast({
+            "type": "pm3_connect_result",
+            "connected": result["success"],
+            "error": result.get("error", ""),
+            "binary": proxmark.binary,
+        })
+
+    elif action == "disconnect_pm3":
+        await proxmark.disconnect()
+        await broadcast({"type": "pm3_disconnected"})
+
     elif action == "update_config":
         config.update(data.get("data", {}))
         doppelganger.config = config
@@ -194,14 +220,70 @@ async def _handle(data: dict) -> None:
         binary = proxmark.redetect()
         await broadcast({"type": "pm3_detected", "binary": binary, "found": bool(binary)})
 
-    elif action == "ping_proxmark":
-        ok = await proxmark.ping()
-        await broadcast({"type": "pm3_ping", "connected": ok, "binary": proxmark.binary})
+    elif action == "pm3_version":
+        version = await proxmark.get_client_version()
+        await broadcast({"type": "pm3_version_result", "version": version,
+                         "binary": proxmark.binary})
 
     elif action == "scan_network":
         await broadcast({"type": "scan_started", "target": "core"})
         results = await scan_for_core()
         await broadcast({"type": "scan_result", "target": "core", "devices": results})
+
+    elif action == "install_pm3":
+        asyncio.create_task(_run_install())
+
+
+async def _run_install() -> None:
+    """Clone and build the iceman fork; stream output line-by-line."""
+    home = Path.home()
+    prefix = Path(os.environ.get("PREFIX", "/data/data/com.termux/files/usr"))
+    clone_dir = home / "proxmark3"
+
+    steps = [
+        ("Removing pkg version (if any)…", f"pkg uninstall proxmark3 -y"),
+        ("Installing build deps…",
+         "pkg install -y git clang make cmake python libc++"),
+        ("Cloning iceman fork…",
+         f"git clone --depth=1 https://github.com/RfidResearchGroup/proxmark3 {clone_dir}"),
+        ("Building (this takes several minutes)…",
+         f"make -C {clone_dir} -j$(nproc)"),
+        ("Linking pm3 to PATH…",
+         f"ln -sf {clone_dir}/pm3 {prefix}/bin/pm3"),
+    ]
+
+    await broadcast({"type": "install_log", "line": "=== Starting iceman fork install ===",
+                     "done": False})
+
+    for label, cmd in steps:
+        await broadcast({"type": "install_log", "line": f"\n-- {label}", "done": False})
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                env={**os.environ, "DEBIAN_FRONTEND": "noninteractive"},
+            )
+            async for raw in proc.stdout:
+                line = raw.decode("utf-8", errors="replace").rstrip()
+                await broadcast({"type": "install_log", "line": line, "done": False})
+            await proc.wait()
+            if proc.returncode != 0:
+                await broadcast({"type": "install_log",
+                                 "line": f"FAILED (exit {proc.returncode})", "done": True,
+                                 "success": False})
+                return
+        except Exception as e:
+            await broadcast({"type": "install_log", "line": f"ERROR: {e}",
+                             "done": True, "success": False})
+            return
+
+    # Re-detect binary after install
+    binary = proxmark.redetect()
+    await broadcast({"type": "install_log",
+                     "line": f"\n=== Done. Binary: {binary or 'NOT FOUND'} ===",
+                     "done": True, "success": bool(binary)})
+    await broadcast({"type": "pm3_detected", "binary": binary, "found": bool(binary)})
 
 
 app = Starlette(
