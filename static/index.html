@@ -145,7 +145,6 @@ body{background:var(--bg);color:var(--txt);font-family:'Courier New',monospace;f
 <div class="hdr">
   <div class="logo">SUSHI</div>
   <div class="badge"><span class="dot" id="dot-dg"></span>CORE</div>
-  <div class="badge"><span class="dot" id="dot-bt"></span>BT</div>
   <div class="badge"><span class="dot" id="dot-pm3"></span>PM3</div>
   <button class="icon-btn" onclick="openSettings()" title="Settings">&#9881;</button>
 </div>
@@ -165,8 +164,6 @@ body{background:var(--bg);color:var(--txt);font-family:'Courier New',monospace;f
   </div>
 
   <button class="stop-btn" id="stop-btn" onclick="stopEmul()">&#9632; Stop</button>
-  <button class="stop-btn" id="bt-conn-btn" style="border-color:var(--blue);color:var(--blue);display:none" onclick="connectBt()">&#8226; BT</button>
-  <button class="stop-btn" id="bt-disc-btn" style="border-color:var(--txt3);color:var(--txt3);display:none" onclick="disconnectBt()">&#9632; BT</button>
 </div>
 
 <!-- Main -->
@@ -208,28 +205,11 @@ body{background:var(--bg);color:var(--txt);font-family:'Courier New',monospace;f
       <div id="scan-net-results" style="margin-top:6px;display:flex;flex-direction:column;gap:4px"></div>
     </div>
 
-    <!-- Bluetooth bridge -->
-    <div class="fg">
-      <label class="fl">Proxmark3 Bluetooth Address</label>
-      <div style="display:flex;gap:6px">
-        <input class="fi" id="cfg-bt-addr" type="text" placeholder="AA:BB:CC:DD:EE:FF" style="flex:1;text-transform:uppercase">
-        <button class="test-btn" id="scan-bt-btn" onclick="scanBt()" style="width:auto;margin:0;padding:8px 12px;white-space:nowrap">Paired</button>
-      </div>
-      <div class="fh">MAC address of the Blueshark module. Tap Paired to list devices already paired to this phone.</div>
-      <div id="scan-bt-results" style="margin-top:6px;display:flex;flex-direction:column;gap:4px"></div>
-    </div>
-
-    <div class="fg">
-      <label class="fl">BT Bridge TCP Port</label>
-      <input class="fi" id="cfg-bt-port" type="number" placeholder="4321" inputmode="numeric">
-      <div class="fh">Sushi listens on this local port so pm3 can connect via tcp://localhost:&lt;port&gt;.</div>
-    </div>
-
     <!-- PM3 settings -->
     <div class="fg">
       <label class="fl">PM3 Device / Port</label>
       <input class="fi" id="cfg-dev" type="text" placeholder="tcp://localhost:4321">
-      <div class="fh">Set automatically to tcp://localhost:&lt;BT port&gt; when the BT bridge is used. Change only if connecting via another bridge.</div>
+      <div class="fh">TCP port that Communication Bridge Pro exposes, e.g. tcp://localhost:4321. Start CBP and connect to Blueshark before launching pm3.</div>
     </div>
 
     <div class="fg">
@@ -253,7 +233,7 @@ body{background:var(--bg);color:var(--txt);font-family:'Courier New',monospace;f
 
 <script>
 // ── State ────────────────────────────────────────────────────────────────
-let ws, cards = [], newIds = new Set(), mode = 'emulate', autoClone = false, emulCard = null, rtimer, btConnected = false;
+let ws, cards = [], newIds = new Set(), mode = 'emulate', autoClone = false, emulCard = null, rtimer;
 
 const FMT = {26:'H10301',27:'H10307',28:'2804W',30:'ATSW30',31:'ADT31',33:'D10202',34:'H10306',35:'C1k35s',36:'S12906',37:'H10304',46:'H800002',48:'C1k48s',56:'Avig56',32:'EM4100'};
 
@@ -267,8 +247,8 @@ function cardLabel(c) {
 // ── WebSocket ─────────────────────────────────────────────────────────────
 function connect() {
   ws = new WebSocket(`ws://${location.host}/ws`);
-  ws.onopen = () => { clearTimeout(rtimer); addLog('Connected','ok'); setDot('dot-dg',null); setDot('dot-bt',null); };
-  ws.onclose = () => { addLog('Backend disconnected — reconnecting…','wn'); setDot('dot-dg',false); setDot('dot-bt',false); setDot('dot-pm3',false); rtimer = setTimeout(connect, 2500); };
+  ws.onopen = () => { clearTimeout(rtimer); addLog('Connected','ok'); setDot('dot-dg',null); };
+  ws.onclose = () => { addLog('Backend disconnected — reconnecting…','wn'); setDot('dot-dg',false); setDot('dot-pm3',false); rtimer = setTimeout(connect, 2500); };
   ws.onerror = () => {};
   ws.onmessage = e => { try { handle(JSON.parse(e.data)); } catch(_){} };
 }
@@ -282,14 +262,12 @@ function handle(m) {
       applyConfig(m.config);
       updateCards(m.cards||[], []);
       emulCard = m.emulating_card;
-      syncBt(m.bt_connected);
       syncEmul();
       break;
     case 'status':
       setDot('dot-dg', m.doppelganger === 'connected');
       if (m.cards !== undefined) updateCards(m.cards, m.new_cards||[]);
       emulCard = m.emulating_card;
-      syncBt(m.bt_connected);
       syncEmul();
       if (m.error) addLog(m.error,'er');
       break;
@@ -322,22 +300,6 @@ function handle(m) {
       break;
     case 'scan_result':
       if (m.target==='core') renderScanResults(m.devices||[]);
-      break;
-    case 'bt_devices':
-      renderBtResults(m.devices||[]);
-      break;
-    case 'bt_connecting':
-      addLog('Connecting to Proxmark3 via Bluetooth…','in');
-      break;
-    case 'bt_status':
-      syncBt(m.connected);
-      if (m.connected) {
-        addLog(`BT bridge active on tcp://localhost:${m.port} (${m.address})`,'ok');
-        toast('Proxmark3 BT connected','ok');
-      } else {
-        addLog(m.error || 'BT bridge stopped','wn');
-        if (m.error) toast(m.error,'er');
-      }
       break;
   }
 }
@@ -403,18 +365,10 @@ function stopEmul()    { send({action:'stop_emulation'}); }
 function clearSeen()   { send({action:'clear_seen'}); }
 function testPm3()     { send({action:'ping_proxmark'}); addLog('Testing PM3…','in'); }
 
-function connectBt()    { send({action:'connect_bt'}); }
-function disconnectBt() { send({action:'disconnect_bt'}); }
-
 function scanNetwork() {
   send({action:'scan_network'});
   document.getElementById('scan-net-btn').textContent = '…';
   document.getElementById('scan-net-btn').disabled = true;
-}
-
-function scanBt() {
-  send({action:'list_bt_devices'});
-  document.getElementById('scan-bt-results').innerHTML = '<div style="color:var(--txt3);font-size:11px">Reading paired devices…</div>';
 }
 
 function renderScanResults(devices) {
@@ -438,31 +392,6 @@ function pickCoreIp(ip) {
   addLog(`Core IP set to ${ip}`,'ok');
 }
 
-function renderBtResults(devices) {
-  const el = document.getElementById('scan-bt-results');
-  if (!devices.length) {
-    el.innerHTML = '<div style="color:var(--txt3);font-size:11px">No paired BT devices found. Pair via Android Bluetooth settings first.</div>';
-    return;
-  }
-  el.innerHTML = devices.map(d =>
-    `<button onclick="pickBtAddr('${h(d.address)}')" style="background:var(--s2);border:1px solid var(--blue);color:var(--blue);border-radius:5px;padding:6px 10px;font:11px/1 'Courier New',monospace;text-align:left;cursor:pointer;opacity:${d.name.toUpperCase().includes('PM3')||d.name.toUpperCase().includes('PROXMARK')||d.name.toUpperCase().includes('RDV')?.9:.6}">
-      ${h(d.address)} &mdash; ${h(d.name)}
-    </button>`
-  ).join('');
-}
-
-function pickBtAddr(addr) {
-  document.getElementById('cfg-bt-addr').value = addr;
-  document.getElementById('scan-bt-results').innerHTML = '';
-  addLog(`BT address set to ${addr}`,'ok');
-}
-
-function syncBt(connected) {
-  btConnected = !!connected;
-  setDot('dot-bt', btConnected);
-  document.getElementById('bt-conn-btn').style.display = btConnected ? 'none' : '';
-  document.getElementById('bt-disc-btn').style.display = btConnected ? '' : 'none';
-}
 
 function setAutoClone(v) {
   autoClone = v;
@@ -497,26 +426,21 @@ function applyConfig(cfg) {
   mode = cfg.clone_mode || 'emulate';
   document.getElementById('m-emul').classList.toggle('act', mode==='emulate');
   document.getElementById('m-write').classList.toggle('act', mode==='write');
-  document.getElementById('cfg-ip').value      = cfg.doppelganger_ip || '';
-  document.getElementById('cfg-dev').value     = cfg.pm3_device || '';
-  document.getElementById('cfg-pm3').value     = cfg.pm3_path || '';
-  document.getElementById('cfg-poll').value    = cfg.poll_interval || 1;
-  document.getElementById('cfg-bt-addr').value = cfg.bt_address || '';
-  document.getElementById('cfg-bt-port').value = cfg.bt_port || 4321;
+  document.getElementById('cfg-ip').value   = cfg.doppelganger_ip || '';
+  document.getElementById('cfg-dev').value  = cfg.pm3_device || '';
+  document.getElementById('cfg-pm3').value  = cfg.pm3_path || '';
+  document.getElementById('cfg-poll').value = cfg.poll_interval || 1;
 }
 
 function openSettings()  { document.getElementById('modal').classList.add('open'); }
 function closeSettings() { document.getElementById('modal').classList.remove('open'); }
 
 function saveSettings() {
-  const btPort = parseInt(document.getElementById('cfg-bt-port').value) || 4321;
   send({action:'update_config', data:{
     doppelganger_ip: document.getElementById('cfg-ip').value.trim(),
     pm3_device:      document.getElementById('cfg-dev').value.trim(),
     pm3_path:        document.getElementById('cfg-pm3').value.trim(),
     poll_interval:   parseFloat(document.getElementById('cfg-poll').value)||1,
-    bt_address:      document.getElementById('cfg-bt-addr').value.trim().toUpperCase(),
-    bt_port:         btPort,
   }});
   closeSettings();
   toast('Settings saved','ok');

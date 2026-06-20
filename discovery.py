@@ -1,9 +1,7 @@
-"""Network and Bluetooth device discovery."""
+"""Network discovery for Doppelganger Core."""
 
 import asyncio
 import socket
-import subprocess
-from typing import Optional
 
 import httpx
 
@@ -75,24 +73,3 @@ async def scan_for_core(timeout: float = 1.5) -> list[dict]:
     return found
 
 
-def list_paired_bt_devices() -> list[dict]:
-    """
-    Return paired Bluetooth devices via bluetoothctl.
-    Returns list of {address, name}.  Empty list if bluetoothctl unavailable.
-    """
-    try:
-        result = subprocess.run(
-            ["bluetoothctl", "paired-devices"],
-            capture_output=True, text=True, timeout=5,
-        )
-        devices = []
-        for line in result.stdout.splitlines():
-            # Line format: "Device AA:BB:CC:DD:EE:FF Some Name"
-            parts = line.strip().split(" ", 2)
-            if len(parts) == 3 and parts[0] == "Device":
-                devices.append({"address": parts[1], "name": parts[2]})
-        return devices
-    except FileNotFoundError:
-        return []
-    except Exception:
-        return []

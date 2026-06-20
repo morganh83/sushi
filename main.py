@@ -14,10 +14,9 @@ from starlette.routing import Mount, Route, WebSocketRoute
 from starlette.staticfiles import StaticFiles
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from bt_bridge import BluetoothBridge
 from card_commands import get_pm3_command, infer_card_label
 from config import Config
-from discovery import list_paired_bt_devices, scan_for_core
+from discovery import scan_for_core
 from doppelganger import DoppelgangerClient
 from proxmark import ProxmarkClient
 
@@ -31,7 +30,6 @@ log = logging.getLogger("sushi")
 config = Config()
 doppelganger = DoppelgangerClient(config)
 proxmark = ProxmarkClient(config)
-bt_bridge = BluetoothBridge(config)
 
 ws_clients: set[WebSocket] = set()
 seen_ids: set[str] = set()
@@ -98,7 +96,6 @@ async def poll_loop() -> None:
                 "cards": cards,
                 "emulating": proxmark.is_emulating,
                 "emulating_card": proxmark.emulating_card,
-                "bt_connected": bt_bridge.is_connected,
             }
             if new_cards:
                 event["new_cards"] = new_cards
@@ -114,7 +111,6 @@ async def poll_loop() -> None:
                 "type": "status",
                 "doppelganger": "disconnected",
                 "error": str(e),
-                "bt_connected": bt_bridge.is_connected,
             })
         except Exception as e:
             log.error("Poll error: %s", e)
@@ -132,7 +128,6 @@ async def lifespan(app: Starlette):
     task.cancel()
     await doppelganger.close()
     await proxmark.stop_emulation()
-    await bt_bridge.stop()
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────
@@ -156,7 +151,6 @@ async def ws_endpoint(ws: WebSocket) -> None:
         "cards": cards,
         "emulating": proxmark.is_emulating,
         "emulating_card": proxmark.emulating_card,
-        "bt_connected": bt_bridge.is_connected,
     }))
 
     try:
@@ -188,7 +182,6 @@ async def _handle(data: dict) -> None:
     elif action == "update_config":
         config.update(data.get("data", {}))
         doppelganger.config = config
-        bt_bridge.config = config
         await broadcast({"type": "config_updated", "config": config.to_dict()})
 
     elif action == "clear_seen":
@@ -203,19 +196,6 @@ async def _handle(data: dict) -> None:
         await broadcast({"type": "scan_started", "target": "core"})
         results = await scan_for_core()
         await broadcast({"type": "scan_result", "target": "core", "devices": results})
-
-    elif action == "list_bt_devices":
-        devices = list_paired_bt_devices()
-        await broadcast({"type": "bt_devices", "devices": devices})
-
-    elif action == "connect_bt":
-        await broadcast({"type": "bt_connecting"})
-        result = await bt_bridge.start()
-        await broadcast({"type": "bt_status", "connected": result["success"], **result})
-
-    elif action == "disconnect_bt":
-        await bt_bridge.stop()
-        await broadcast({"type": "bt_status", "connected": False})
 
 
 app = Starlette(

@@ -13,14 +13,11 @@ DEFAULTS: dict = {
     "poll_interval": 1.0,
     "reader_mode": "hid",          # "hid" or "paxton"
     "server_port": 8080,
-    "bt_address": "",              # Proxmark3 Blueshark BT MAC address
-    "bt_port": 4321,               # Local TCP port the BT bridge listens on
 }
 
 ALLOWED_UPDATES = {
     "auto_clone", "clone_mode", "doppelganger_ip", "doppelganger_port",
     "pm3_device", "pm3_path", "poll_interval", "reader_mode",
-    "bt_address", "bt_port",
 }
 
 
