@@ -33,6 +33,7 @@ class Config:
                 self._data.update({k: v for k, v in saved.items() if k in self._data})
             except Exception:
                 pass
+            self.save()  # rewrite without any keys removed from DEFAULTS
 
     def save(self) -> None:
         CONFIG_FILE.write_text(json.dumps(self._data, indent=2))
