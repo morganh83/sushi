@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+"""Sushi — mobile RFID clone controller for Doppelganger Core + Proxmark3."""
+
+import argparse
+import asyncio
+import json
+import logging
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Optional
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
+
+from card_commands import get_pm3_command, infer_card_label
+from config import Config
+from doppelganger import DoppelgangerClient
+from proxmark import ProxmarkClient
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-8s %(message)s",
+    datefmt="%H:%M:%S",
+)
+log = logging.getLogger("sushi")
+
+config = Config()
+doppelganger = DoppelgangerClient(config)
+proxmark = ProxmarkClient(config)
+
+ws_clients: set[WebSocket] = set()
+seen_ids: set[str] = set()
+clone_lock = asyncio.Lock()
+
+STATIC = Path(__file__).parent / "static"
+
+
+# ── Broadcast helpers ──────────────────────────────────────────────────────
+
+async def broadcast(event: dict) -> None:
+    dead: set[WebSocket] = set()
+    msg = json.dumps(event)
+    for ws in list(ws_clients):
+        try:
+            await ws.send_text(msg)
+        except Exception:
+            dead.add(ws)
+    ws_clients -= dead
+
+
+# ── Clone / emulate ────────────────────────────────────────────────────────
+
+async def do_clone(card: dict, mode: str) -> None:
+    label = infer_card_label(card)
+    cmd = get_pm3_command(card, mode)
+
+    if not cmd:
+        await broadcast({
+            "type": "pm3_error",
+            "card": card,
+            "message": f"No pm3 command for {label} — unsupported type or missing data.",
+        })
+        return
+
+    await broadcast({"type": "pm3_start", "card": card, "mode": mode,
+                     "cmd": cmd, "label": label})
+
+    if mode == "emulate":
+        result = await proxmark.start_emulation(cmd, card)
+    else:
+        result = await proxmark.run_command(cmd)
+
+    await broadcast({
+        "type": "pm3_result",
+        "card": card, "mode": mode, "label": label,
+        "output": result["output"],
+        "success": result["success"],
+    })
+
+
+# ── Background poller ──────────────────────────────────────────────────────
+
+async def poll_loop() -> None:
+    while True:
+        try:
+            cards = await doppelganger.get_cards()
+            new_cards = [c for c in cards if c.get("id") and c["id"] not in seen_ids]
+            for c in new_cards:
+                seen_ids.add(c["id"])
+
+            event: dict = {
+                "type": "status",
+                "doppelganger": "connected",
+                "card_count": len(cards),
+                "cards": cards,
+                "emulating": proxmark.is_emulating,
+                "emulating_card": proxmark.emulating_card,
+            }
+            if new_cards:
+                event["new_cards"] = new_cards
+                log.info("New cards: %s", [c["id"] for c in new_cards])
+                if config.auto_clone:
+                    async with clone_lock:
+                        await do_clone(new_cards[-1], config.clone_mode)
+
+            await broadcast(event)
+
+        except ConnectionError as e:
+            await broadcast({"type": "status", "doppelganger": "disconnected",
+                             "error": str(e)})
+        except Exception as e:
+            log.error("Poll error: %s", e)
+
+        await asyncio.sleep(config.poll_interval)
+
+
+# ── App lifecycle ──────────────────────────────────────────────────────────
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    task = asyncio.create_task(poll_loop())
+    log.info("Sushi started — polling Doppelganger Core at %s", doppelganger.base_url)
+    yield
+    task.cancel()
+    await doppelganger.close()
+    await proxmark.stop_emulation()
+
+
+app = FastAPI(lifespan=lifespan)
+app.mount("/static", StaticFiles(directory=STATIC), name="static")
+
+
+# ── Routes ────────────────────────────────────────────────────────────────
+
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    return FileResponse(STATIC / "index.html")
+
+
+@app.websocket("/ws")
+async def ws_endpoint(ws: WebSocket) -> None:
+    await ws.accept()
+    ws_clients.add(ws)
+
+    # Push current state on connect
+    try:
+        cards = await doppelganger.get_cards()
+    except Exception:
+        cards = []
+
+    await ws.send_text(json.dumps({
+        "type": "init",
+        "config": config.to_dict(),
+        "cards": cards,
+        "emulating": proxmark.is_emulating,
+        "emulating_card": proxmark.emulating_card,
+    }))
+
+    try:
+        while True:
+            data = await ws.receive_json()
+            await _handle(data)
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        log.error("WS error: %s", e)
+    finally:
+        ws_clients.discard(ws)
+
+
+async def _handle(data: dict) -> None:
+    action = data.get("action")
+
+    if action == "clone":
+        card = data.get("card")
+        mode = data.get("mode") or config.clone_mode
+        if card:
+            async with clone_lock:
+                await do_clone(card, mode)
+
+    elif action == "stop_emulation":
+        result = await proxmark.stop_emulation()
+        await broadcast({"type": "emulation_stopped", **result})
+
+    elif action == "update_config":
+        config.update(data.get("data", {}))
+        # Rebuild Doppelganger client base URL on IP change
+        doppelganger.config = config
+        await broadcast({"type": "config_updated", "config": config.to_dict()})
+
+    elif action == "clear_seen":
+        seen_ids.clear()
+        await broadcast({"type": "seen_cleared"})
+
+    elif action == "ping_proxmark":
+        ok = await proxmark.ping()
+        await broadcast({"type": "pm3_ping", "connected": ok})
+
+    elif action == "test_pm3":
+        result = await proxmark.run_command("hw version", timeout=10.0)
+        await broadcast({"type": "pm3_test", **result})
+
+
+# ── Entry point ───────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    import uvicorn
+
+    parser = argparse.ArgumentParser(description="Sushi — RFID clone controller")
+    parser.add_argument("--port", type=int, default=config.server_port)
+    parser.add_argument("--host", default="0.0.0.0")
+    args = parser.parse_args()
+
+    print(f"\n  SUSHI")
+    print(f"  Doppelganger: http://{config.doppelganger_ip}:{config.doppelganger_port}")
+    print(f"  PM3 device  : {config.pm3_device}")
+    print(f"  Open browser: http://localhost:{args.port}\n")
+
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
