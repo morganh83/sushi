@@ -9,9 +9,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse
-from fastapi.staticfiles import StaticFiles
+from starlette.applications import Starlette
+from starlette.responses import FileResponse, HTMLResponse
+from starlette.routing import Mount, Route, WebSocketRoute
+from starlette.staticfiles import StaticFiles
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from card_commands import get_pm3_command, infer_card_label
 from config import Config
@@ -127,18 +129,10 @@ async def lifespan(app: FastAPI):
     await proxmark.stop_emulation()
 
 
-app = FastAPI(lifespan=lifespan)
-app.mount("/static", StaticFiles(directory=STATIC), name="static")
-
-
-# ── Routes ────────────────────────────────────────────────────────────────
-
-@app.get("/", response_class=HTMLResponse)
-async def root():
+async def root(request) -> FileResponse:
     return FileResponse(STATIC / "index.html")
 
 
-@app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket) -> None:
     await ws.accept()
     ws_clients.add(ws)
@@ -200,6 +194,16 @@ async def _handle(data: dict) -> None:
     elif action == "test_pm3":
         result = await proxmark.run_command("hw version", timeout=10.0)
         await broadcast({"type": "pm3_test", **result})
+
+
+app = Starlette(
+    routes=[
+        Route("/", root),
+        WebSocketRoute("/ws", ws_endpoint),
+        Mount("/static", StaticFiles(directory=STATIC), name="static"),
+    ],
+    lifespan=lifespan,
+)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────
