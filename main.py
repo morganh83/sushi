@@ -7,7 +7,6 @@ import json
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
 
 from starlette.applications import Starlette
 from starlette.responses import FileResponse, HTMLResponse
@@ -15,8 +14,10 @@ from starlette.routing import Mount, Route, WebSocketRoute
 from starlette.staticfiles import StaticFiles
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+from bt_bridge import BluetoothBridge
 from card_commands import get_pm3_command, infer_card_label
 from config import Config
+from discovery import list_paired_bt_devices, scan_for_core
 from doppelganger import DoppelgangerClient
 from proxmark import ProxmarkClient
 
@@ -30,6 +31,7 @@ log = logging.getLogger("sushi")
 config = Config()
 doppelganger = DoppelgangerClient(config)
 proxmark = ProxmarkClient(config)
+bt_bridge = BluetoothBridge(config)
 
 ws_clients: set[WebSocket] = set()
 seen_ids: set[str] = set()
@@ -38,7 +40,7 @@ clone_lock = asyncio.Lock()
 STATIC = Path(__file__).parent / "static"
 
 
-# ── Broadcast helpers ──────────────────────────────────────────────────────
+# ── Broadcast ──────────────────────────────────────────────────────────────
 
 async def broadcast(event: dict) -> None:
     dead: set[WebSocket] = set()
@@ -68,10 +70,8 @@ async def do_clone(card: dict, mode: str) -> None:
     await broadcast({"type": "pm3_start", "card": card, "mode": mode,
                      "cmd": cmd, "label": label})
 
-    if mode == "emulate":
-        result = await proxmark.start_emulation(cmd, card)
-    else:
-        result = await proxmark.run_command(cmd)
+    result = await (proxmark.start_emulation(cmd, card) if mode == "emulate"
+                    else proxmark.run_command(cmd))
 
     await broadcast({
         "type": "pm3_result",
@@ -98,6 +98,7 @@ async def poll_loop() -> None:
                 "cards": cards,
                 "emulating": proxmark.is_emulating,
                 "emulating_card": proxmark.emulating_card,
+                "bt_connected": bt_bridge.is_connected,
             }
             if new_cards:
                 event["new_cards"] = new_cards
@@ -109,8 +110,12 @@ async def poll_loop() -> None:
             await broadcast(event)
 
         except ConnectionError as e:
-            await broadcast({"type": "status", "doppelganger": "disconnected",
-                             "error": str(e)})
+            await broadcast({
+                "type": "status",
+                "doppelganger": "disconnected",
+                "error": str(e),
+                "bt_connected": bt_bridge.is_connected,
+            })
         except Exception as e:
             log.error("Poll error: %s", e)
 
@@ -122,12 +127,15 @@ async def poll_loop() -> None:
 @asynccontextmanager
 async def lifespan(app: Starlette):
     task = asyncio.create_task(poll_loop())
-    log.info("Sushi started — polling Doppelganger Core at %s", doppelganger.base_url)
+    log.info("Sushi started — Core: %s  PM3: %s", doppelganger.base_url, config.pm3_device)
     yield
     task.cancel()
     await doppelganger.close()
     await proxmark.stop_emulation()
+    await bt_bridge.stop()
 
+
+# ── Routes ─────────────────────────────────────────────────────────────────
 
 async def root(request) -> FileResponse:
     return FileResponse(STATIC / "index.html")
@@ -137,7 +145,6 @@ async def ws_endpoint(ws: WebSocket) -> None:
     await ws.accept()
     ws_clients.add(ws)
 
-    # Push current state on connect
     try:
         cards = await doppelganger.get_cards()
     except Exception:
@@ -149,6 +156,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
         "cards": cards,
         "emulating": proxmark.is_emulating,
         "emulating_card": proxmark.emulating_card,
+        "bt_connected": bt_bridge.is_connected,
     }))
 
     try:
@@ -179,8 +187,8 @@ async def _handle(data: dict) -> None:
 
     elif action == "update_config":
         config.update(data.get("data", {}))
-        # Rebuild Doppelganger client base URL on IP change
         doppelganger.config = config
+        bt_bridge.config = config
         await broadcast({"type": "config_updated", "config": config.to_dict()})
 
     elif action == "clear_seen":
@@ -191,9 +199,23 @@ async def _handle(data: dict) -> None:
         ok = await proxmark.ping()
         await broadcast({"type": "pm3_ping", "connected": ok})
 
-    elif action == "test_pm3":
-        result = await proxmark.run_command("hw version", timeout=10.0)
-        await broadcast({"type": "pm3_test", **result})
+    elif action == "scan_network":
+        await broadcast({"type": "scan_started", "target": "core"})
+        results = await scan_for_core()
+        await broadcast({"type": "scan_result", "target": "core", "devices": results})
+
+    elif action == "list_bt_devices":
+        devices = list_paired_bt_devices()
+        await broadcast({"type": "bt_devices", "devices": devices})
+
+    elif action == "connect_bt":
+        await broadcast({"type": "bt_connecting"})
+        result = await bt_bridge.start()
+        await broadcast({"type": "bt_status", "connected": result["success"], **result})
+
+    elif action == "disconnect_bt":
+        await bt_bridge.stop()
+        await broadcast({"type": "bt_status", "connected": False})
 
 
 app = Starlette(
@@ -217,8 +239,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     print(f"\n  SUSHI")
-    print(f"  Doppelganger: http://{config.doppelganger_ip}:{config.doppelganger_port}")
-    print(f"  PM3 device  : {config.pm3_device}")
-    print(f"  Open browser: http://localhost:{args.port}\n")
+    print(f"  Core   : http://{config.doppelganger_ip}:{config.doppelganger_port}")
+    print(f"  PM3    : {config.pm3_device}")
+    print(f"  BT MAC : {config.bt_address or '(not set)'}")
+    print(f"  Browser: http://localhost:{args.port}\n")
 
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
