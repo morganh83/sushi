@@ -221,7 +221,6 @@ if __name__ == "__main__":
     print(f"\n  SUSHI")
     print(f"  Core   : http://{config.doppelganger_ip}:{config.doppelganger_port}")
     print(f"  PM3    : {config.pm3_device}")
-    print(f"  BT MAC : {config.bt_address or '(not set)'}")
     print(f"  Browser: http://localhost:{args.port}\n")
 
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
