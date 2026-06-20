@@ -151,30 +151,29 @@ async def root(request) -> FileResponse:
 async def ws_endpoint(ws: WebSocket) -> None:
     await ws.accept()
     ws_clients.add(ws)
-
     try:
-        cards = await doppelganger.get_cards()
-    except Exception:
-        cards = []
+        try:
+            cards = await doppelganger.get_cards()
+        except Exception:
+            cards = []
 
-    await ws.send_text(json.dumps({
-        "type": "init",
-        "config": config.to_dict(),
-        "cards": cards,
-        "emulating": proxmark.is_emulating,
-        "emulating_card": proxmark.emulating_card,
-        "pm3_binary": proxmark.binary,
-        "pm3_connected": proxmark.is_connected,
-    }))
+        await ws.send_text(json.dumps({
+            "type": "init",
+            "config": config.to_dict(),
+            "cards": cards,
+            "emulating": proxmark.is_emulating,
+            "emulating_card": proxmark.emulating_card,
+            "pm3_binary": proxmark.binary,
+            "pm3_connected": proxmark.is_connected,
+        }))
 
-    try:
         while True:
             data = await ws.receive_json()
             await _handle(data)
     except WebSocketDisconnect:
         pass
     except Exception as e:
-        log.error("WS error: %s", e)
+        log.debug("WS session ended: %s", type(e).__name__)
     finally:
         ws_clients.discard(ws)
 

@@ -193,17 +193,21 @@ class ProxmarkClient:
     # ── Version / install helpers ─────────────────────────────────────────
 
     async def get_client_version(self) -> str:
-        """Run the binary with --help to extract version info (no connection needed)."""
+        """Try common help/version flags and return the first useful output."""
         if not self.binary:
-            return "pm3 binary not found."
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                self.binary, "--help",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
-            lines = [l for l in _clean(stdout).splitlines() if l.strip()][:10]
-            return "\n".join(lines)
-        except Exception as e:
-            return str(e)
+            return "No binary found. Install pm3 or proxmark3."
+        for flag in ("-h", "--help", "-v", "--version"):
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    self.binary, flag,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                )
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+                text = _clean(stdout).strip()
+                lines = [l for l in text.splitlines() if l.strip()]
+                if lines:
+                    return f"[{self.binary} {flag}]\n" + "\n".join(lines[:12])
+            except Exception:
+                continue
+        return f"Could not get version info from '{self.binary}'"
