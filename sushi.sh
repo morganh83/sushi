@@ -27,6 +27,9 @@ if $do_update && command -v git &>/dev/null && git -C "$DIR" rev-parse --git-dir
         echo "[sushi] Dependencies changed — reinstalling..."
         "$VENV/bin/pip" install --quiet -r "$DIR/requirements.txt"
       fi
+
+      # Clear stale compiled bytecode so Python runs the updated source files
+      find "$DIR" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
     else
       echo "[sushi] Up to date."
     fi
@@ -41,6 +44,9 @@ if [ ! -d "$VENV" ]; then
   "$VENV/bin/pip" install --quiet -r "$DIR/requirements.txt"
   echo "[sushi] Ready."
 fi
+
+# ── Clear any leftover bytecode cache before launching ───────────────────
+find "$DIR" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
 
 # ── Launch ────────────────────────────────────────────────────────────────
 ARGS=()
