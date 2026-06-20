@@ -259,7 +259,7 @@ function cardLabel(c) {
 // ── WebSocket ─────────────────────────────────────────────────────────────
 function connect() {
   ws = new WebSocket(`ws://${location.host}/ws`);
-  ws.onopen = () => { clearTimeout(rtimer); addLog('Connected','ok'); setDot('dot-dg',null); };
+  ws.onopen = () => { clearTimeout(rtimer); addLog('Connected','ok'); setDot('dot-dg',null); setDot('dot-pm3',null); };
   ws.onclose = () => { addLog('Backend disconnected — reconnecting…','wn'); setDot('dot-dg',false); setDot('dot-pm3',false); rtimer = setTimeout(connect, 2500); };
   ws.onerror = () => {};
   ws.onmessage = e => { try { handle(JSON.parse(e.data)); } catch(_){} };
@@ -276,6 +276,7 @@ function handle(m) {
       emulCard = m.emulating_card;
       syncEmul();
       showBinary(m.pm3_binary||'');
+      if (m.pm3_binary) send({action:'ping_proxmark'});
       break;
     case 'status':
       setDot('dot-dg', m.doppelganger === 'connected');
