@@ -120,7 +120,7 @@ async def poll_loop() -> None:
 # ── App lifecycle ──────────────────────────────────────────────────────────
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: Starlette):
     task = asyncio.create_task(poll_loop())
     log.info("Sushi started — polling Doppelganger Core at %s", doppelganger.base_url)
     yield
