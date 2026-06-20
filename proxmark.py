@@ -196,7 +196,7 @@ class ProxmarkClient:
         """Try common help/version flags and return the first useful output."""
         if not self.binary:
             return "No binary found. Install pm3 or proxmark3."
-        for flag in ("-h", "--help", "-v", "--version"):
+        for flag in ("-v", "--version", "-h", "--help"):
             try:
                 proc = await asyncio.create_subprocess_exec(
                     self.binary, flag,
