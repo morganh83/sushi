@@ -126,19 +126,15 @@ class ProxmarkClient:
 
     async def _drain_to_prompt(self) -> str:
         """
-        Read banner text until pm3 is at its interactive prompt.
+        Read until pm3 shows its interactive prompt.
 
-        The iceman fork wraps prompt components in ANSI colour codes, so the
-        raw bytes for '[bt] pm3 --> ' may look like
-        '\x1b[32m[bt]\x1b[0m \x1b[1mpm3\x1b[0m --> '.
-        Searching for the literal bytes b'pm3 --> ' is therefore unreliable.
-
-        Instead: read chunks with a short per-chunk timeout.  When no output
-        arrives for 1 second after receiving some data, the prompt is waiting
-        and we return.  We also check the ANSI-stripped text for 'pm3 -->'
-        so we exit immediately when it is visible without waiting the full second.
+        Handles two scenarios automatically:
+        - ANSI colour codes interleaved in the prompt text (searches cleaned text)
+        - Firmware mismatch confirmation prompt — auto-answers 'y' so pm3
+          continues to the prompt instead of waiting for manual input
         """
         buf = b""
+        answered_yn = False
         while True:
             try:
                 chunk = await asyncio.wait_for(
@@ -147,21 +143,39 @@ class ProxmarkClient:
                 if not chunk:
                     break
                 buf += chunk
-                if "pm3 -->" in _clean(buf):
+                cleaned = _clean(buf)
+
+                # Auto-answer firmware mismatch "continue? [y/n]" prompt
+                if not answered_yn and "[y/n]" in cleaned.lower():
+                    self._proc.stdin.write(b"y\n")
+                    await self._proc.stdin.drain()
+                    answered_yn = True
+
+                if "pm3 -->" in cleaned:
                     break
             except asyncio.TimeoutError:
                 if buf:
-                    # Had output, now quiet — prompt is waiting
                     break
-                # No output yet — keep waiting (outer timeout handles overall limit)
+                # No output yet — keep waiting (outer timeout handles limit)
         return _clean(buf)
 
     # ── Commands ──────────────────────────────────────────────────────────
 
+    async def _ensure_connected(self) -> dict | None:
+        """If not connected, try once to reconnect. Returns error dict or None."""
+        if not self.is_connected:
+            result = await self.connect()
+            if not result["success"]:
+                return {"success": False,
+                        "output": f"PM3 not connected and reconnect failed: {result['error']}",
+                        "returncode": -1}
+        return None
+
     async def run_command(self, cmd: str, timeout: float = 30.0) -> dict:
         """Send one command and return its output (blocks until next prompt)."""
-        if not self.is_connected:
-            return {"success": False, "output": "PM3 not connected.", "returncode": -1}
+        err = await self._ensure_connected()
+        if err:
+            return err
         async with self._lock:
             try:
                 self._proc.stdin.write(f"{cmd}\n".encode())
@@ -182,8 +196,9 @@ class ProxmarkClient:
 
     async def start_emulation(self, cmd: str, card: dict) -> dict:
         """Send a sim command without waiting for completion (runs until stopped)."""
-        if not self.is_connected:
-            return {"success": False, "output": "PM3 not connected.", "returncode": -1}
+        err = await self._ensure_connected()
+        if err:
+            return err
         async with self._lock:
             try:
                 self._proc.stdin.write(f"{cmd}\n".encode())

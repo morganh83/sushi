@@ -281,7 +281,7 @@ body{background:var(--bg);color:var(--txt);font-family:'Courier New',monospace;f
 
 <script>
 // ── State ────────────────────────────────────────────────────────────────
-let ws, cards = [], newIds = new Set(), mode = 'emulate', autoClone = false, emulCard = null, rtimer;
+let ws, cards = [], newIds = new Set(), flashIds = new Set(), mode = 'emulate', autoClone = false, emulCard = null, rtimer;
 
 const FMT = {26:'H10301',27:'H10307',28:'2804W',30:'ATSW30',31:'ADT31',33:'D10202',34:'H10306',35:'C1k35s',36:'S12906',37:'H10304',46:'H800002',48:'C1k48s',56:'Avig56',32:'EM4100'};
 
@@ -340,7 +340,7 @@ function handle(m) {
     case 'pm3_error':  addLog(m.message,'er'); break;
     case 'emulation_stopped': emulCard = null; syncEmul(); addLog('Emulation stopped','in'); break;
     case 'config_updated': applyConfig(m.config); break;
-    case 'seen_cleared': newIds.clear(); render(); addLog('New markers reset','in'); break;
+    case 'seen_cleared': newIds.clear(); flashIds.clear(); render(); addLog('New markers reset','in'); break;
     case 'pm3_connecting':
       addLog('Connecting to PM3…','in');
       setDot('dot-pm3', null);
@@ -434,11 +434,16 @@ function updateCards(c, newOnes) {
   cards = c;
   newOnes.forEach(n => {
     newIds.add(n.id);
+    flashIds.add(n.id);
     toast(`New: ${cardLabel(n)}`,'in');
     notifyNewCard(n);
   });
   document.getElementById('cnt').textContent = cards.length;
   render();
+  // Clear flash set after animation finishes (3 × 0.5 s + margin)
+  if (newOnes.length > 0) {
+    setTimeout(() => { flashIds.clear(); render(); }, 2000);
+  }
 }
 
 function render() {
@@ -451,9 +456,10 @@ function render() {
 }
 
 function cardHTML(c) {
-  const isNew   = newIds.has(c.id);
+  const isFlash = flashIds.has(c.id);   // triggers animation — cleared after 2 s
+  const isNew   = newIds.has(c.id);     // keeps the NEW badge until Reset
   const isEmul  = emulCard?.id === c.id;
-  const cls     = [isNew?'new':'', isEmul?'emul':''].filter(Boolean).join(' ');
+  const cls     = [isFlash?'new':'', isEmul?'emul':''].filter(Boolean).join(' ');
   const label   = cardLabel(c);
   const cj      = h(JSON.stringify(c));
 
