@@ -402,8 +402,12 @@ function handle(m) {
           el.textContent = `ERROR: ${m.error}\nURL: ${m.url}`;
           el.style.color = 'var(--red)';
         } else {
+          const parsedLine = m.parsed_count !== undefined
+            ? `\nParsed: ${m.parsed_count} card(s)` + (m.parse_error ? ` (error: ${m.parse_error})` : '')
+              + (m.first_parsed ? `\nFirst card: ${JSON.stringify(m.first_parsed)}` : '')
+            : '';
           el.style.color = 'var(--txt2)';
-          el.textContent = `URL: ${m.url}\nHTTP: ${m.status}  Length: ${m.length} bytes\n${'─'.repeat(40)}\n${m.content || '(empty)'}`;
+          el.textContent = `URL: ${m.url}\nHTTP ${m.status}  ${m.length} bytes${parsedLine}\n${'─'.repeat(40)}\n${m.content || '(empty — no cards written yet?)'}`;
         }
       }
       break;

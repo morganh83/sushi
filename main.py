@@ -228,6 +228,15 @@ async def _handle(data: dict) -> None:
 
     elif action == "test_core":
         result = await doppelganger.get_raw_csv()
+        # Also attempt to parse so we can report the discrepancy
+        if result.get("content"):
+            try:
+                parsed = doppelganger._parse_csv(result["content"])
+                result["parsed_count"] = len(parsed)
+                result["first_parsed"] = parsed[0] if parsed else None
+            except Exception as e:
+                result["parsed_count"] = -1
+                result["parse_error"] = str(e)
         await broadcast({"type": "core_raw_csv", **result})
 
     elif action == "scan_network":
