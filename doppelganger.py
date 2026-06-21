@@ -117,19 +117,78 @@ class DoppelgangerClient:
         data_rows = rows[1:] if has_header else rows
 
         cards = []
+        seen: set[str] = set()
         for row in data_rows:
             card = self._parse_row([c.strip() for c in row], header)
             if card:
-                cards.append(card)
+                cid = card.get("id", "")
+                if not cid or cid not in seen:
+                    if cid:
+                        seen.add(cid)
+                    cards.append(card)
         return cards
 
     def _parse_row(self, row: list[str], header: Optional[list[str]]) -> Optional[dict]:
         if not row:
             return None
 
+        # ── Key:Value format ──────────────────────────────────────────────
+        # The Doppelganger Core writes each row as self-describing key:value
+        # pairs, e.g.:
+        #   DATA_TYPE: CARD, Format: C1k35s (C-1000), Bit_Length: 35,
+        #   Hex_Value: 2D4A64FB8E, Facility_Code: 2643, Card_Number: 163271, BIN: ...
+        if ": " in row[0]:
+            kv: dict[str, str] = {}
+            for col in row:
+                col = col.strip()
+                if ": " in col:
+                    key, _, val = col.partition(": ")
+                    # Normalise: upper-case, underscores instead of spaces
+                    kv[key.strip().upper().replace(" ", "_")] = val.strip()
+
+            data_type = kv.get("DATA_TYPE", "CARD").upper()
+
+            # ── Paxton / Net2 ─────────────────────────────────────────────
+            if "NET2" in data_type or "PAXTON" in data_type:
+                token = kv.get("TOKEN", kv.get("CARD_NUMBER", ""))
+                return {
+                    "card_type": "paxton",
+                    "type_str": kv.get("FORMAT", "Net2"),
+                    "token": token,
+                    "hex": kv.get("HEX_VALUE", kv.get("HEX", "")),
+                    "bl": "", "fc": token, "cn": "",
+                    "id": f"paxton-{token}",
+                }
+
+            # ── HID / Wiegand ─────────────────────────────────────────────
+            if "CARD" in data_type or not data_type:
+                bl   = kv.get("BIT_LENGTH", "")
+                fc   = kv.get("FACILITY_CODE", "")
+                cn   = kv.get("CARD_NUMBER", "")
+                hex_ = kv.get("HEX_VALUE", kv.get("HEX", ""))
+                bin_ = kv.get("BIN", "")
+                fmt  = kv.get("FORMAT", "")
+
+                if not any([bl, fc, cn]):
+                    return None
+                try:
+                    int(bl)
+                except (ValueError, TypeError):
+                    return None
+
+                return {
+                    "card_type": "hid",
+                    "bl": bl, "fc": fc, "cn": cn,
+                    "hex": hex_, "bin": bin_,
+                    "format": fmt,
+                    "id": f"hid-{bl}-{fc}-{cn}",
+                }
+            return None
+
+        # ── Standard column-based CSV (header or positional) ─────────────
         rd = dict(zip(header, row)) if header else {}
 
-        # ── Paxton / Net2 mode ────────────────────────────────────────────
+        # Paxton column format
         if "TYPE" in rd or "TOKEN" in rd:
             token = rd.get("TOKEN", row[1] if len(row) > 1 else "")
             return {
@@ -141,17 +200,15 @@ class DoppelgangerClient:
                 "id": f"paxton-{token}",
             }
 
-        # ── HID / Wiegand mode ────────────────────────────────────────────
+        # HID column format
         bl  = rd.get("BL",  row[0] if len(row) > 0 else "")
         fc  = rd.get("FC",  row[1] if len(row) > 1 else "")
         cn  = rd.get("CN",  row[2] if len(row) > 2 else "")
         hex_ = rd.get("HEX", rd.get("CSVHEX", row[3] if len(row) > 3 else ""))
         bin_ = rd.get("BIN", rd.get("DATASTREAMBIN", row[4] if len(row) > 4 else ""))
 
-        # Skip entirely empty rows
         if not any([bl, fc, cn]):
             return None
-
         try:
             int(bl)
         except (ValueError, TypeError):

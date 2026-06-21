@@ -288,7 +288,8 @@ const FMT = {26:'H10301',27:'H10307',28:'2804W',30:'ATSW30',31:'ADT31',33:'D1020
 function cardLabel(c) {
   if (c.card_type === 'paxton') return 'Paxton Net2';
   const bl = parseInt(c.bl)||0;
-  const f = FMT[bl];
+  // Prefer the format name from the CSV if present, else look up by BL
+  const f = (c.format || '').split(' ')[0] || FMT[bl] || '';
   return f ? `HID ${f} (${bl}-bit)` : (c.bl ? `HID ${c.bl}-bit` : 'Unknown');
 }
 
