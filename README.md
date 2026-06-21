@@ -259,32 +259,49 @@ http://localhost:8080
 
 ---
 
-## First-time setup
+## Connection workflow
 
-After the UI loads, tap the gear icon (top right) to open Settings.
+### Step 1 — Doppelganger Core
 
-| Setting | What to enter |
-|---------|--------------|
-| **Doppelganger Core IP** | `192.168.4.1` if your phone is connected to the Core's WiFi AP, or the IP the Core gets on your phone's hotspot |
-| **PM3 Device / Port** | The TCP address Communication Bridge Pro exposes, e.g. `tcp://localhost:2323` — check CBP settings for the exact port |
-| **PM3 Binary Path** | Leave as `pm3` if it is in your PATH; otherwise provide the full path, e.g. `/data/data/com.termux/files/home/proxmark3/pm3` |
-| **Poll Interval** | How often (seconds) to check for new cards. Default `1.0` |
+The recommended workflow keeps your phone's mobile data available and avoids switching WiFi networks mid-engagement.
 
-Tap **Save**, then tap **Test PM3 Connection** to confirm the Proxmark3 is reachable.
+1. **Enable your phone's mobile hotspot.**
+2. **Power on the Doppelganger Core.** It will broadcast its own WiFi AP (`doppelganger_XXXX`, password `UndertheRadar`).
+3. **Connect your phone to the Core's AP** and open `http://192.168.4.1` in a browser.
+4. **Configure the Core to join your hotspot** via the network/WiFi settings page. Once saved, the Core reboots and joins your hotspot as a client.
+5. **Reconnect your phone to your hotspot** (or it may reconnect automatically). The Core is now on the same network as your phone.
+6. **In Sushi → Settings**, tap **Scan** next to the Core IP field. Sushi probes the hotspot subnet and finds the Core automatically. Tap the result to save the IP.
+
+The CORE dot turns green once Sushi can reach the Core.
+
+### Step 2 — Proxmark3
+
+Connect the Proxmark3 however you normally do for your hardware configuration:
+
+**Blueshark (Bluetooth, most common)**
+
+1. Open **Communication Bridge Pro**, connect to the Blueshark module, and confirm it is bridging on port **4321**.
+2. That is all — Sushi talks to CBP's TCP port directly. No further setup needed.
+
+**USB (via Termux)**
+
+If using USB instead of Bluetooth, set the PM3 device path in Settings to the serial device (e.g. `/dev/ttyACM0`) and connect the Proxmark3 via USB OTG.
+
+The PM3 dot turns green once the TCP port is reachable (Bluetooth) or the device file is present (USB).
 
 ---
 
-## Connecting to the Doppelganger Core
+## First-time settings
 
-The Core can connect to your phone in two ways:
+Open **Settings** (gear icon, top right) after the first launch.
 
-**Option A — Join the Core's WiFi AP (simplest)**
+| Setting | What to enter |
+|---------|--------------|
+| **Doppelganger Core IP** | Set automatically by the Scan button (see above) |
+| **CBP TCP Port** | `tcp:localhost:4321` (default — matches Communication Bridge Pro's default port) |
+| **Poll Interval** | How often Sushi checks for new cards. Default `1.0` s |
 
-The Core broadcasts a network named `doppelganger_XXXX`. Connect your phone to it (password: `UndertheRadar`). The Core is then at `192.168.4.1`. Note: while connected to the Core's AP, your phone has no internet access.
-
-**Option B — Core joins your phone's hotspot**
-
-Enable your phone's mobile hotspot, then configure the Core to connect to it via its web UI (`http://192.168.4.1/config.html` while on the Core's AP). Once joined, find the IP the Core was assigned by your hotspot's DHCP, and enter that in Sushi's settings. This leaves your phone's mobile data available.
+Tap **Save**, then tap **Test PM3 Connection** to run a full `hw version` check and confirm the Proxmark3 is reachable end-to-end.
 
 ---
 
@@ -296,18 +313,18 @@ Enable your phone's mobile hotspot, then configure the Core to connect to it via
 2. Place a blank T5577 (LF) or writable HF card in front of the Proxmark3 antenna
 3. Toggle **Auto-Clone** on
 4. Select **Write** or **Emulate** mode
-5. Walk near a target reader — when the Core captures a card, Sushi fires the pm3 command automatically
+5. Walk near a target reader — when the Core captures a card, Sushi fires the proxmark3 command automatically and vibrates the phone
 
 ### Manual clone
 
 Each card in the list has two buttons:
 
-- **Write** — writes the card data to the blank card on the Proxmark3 antenna (one-shot)
+- **Write** — writes the card data to a blank card held against the Proxmark3 antenna (one-shot, proxmark3 exits when done)
 - **Emulate** — starts continuous emulation; the Proxmark3 acts as that card until you tap **Stop**
 
 ### Stopping emulation
 
-When emulation is active, a **Stop** button appears in the toolbar and on the card row. Tap either to terminate the pm3 process.
+When emulation is active, a **Stop** button appears in the toolbar and on the card row. Tap either to terminate the emulation process.
 
 ### Resetting the "New" markers
 
