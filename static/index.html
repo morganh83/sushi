@@ -164,8 +164,6 @@ body{background:var(--bg);color:var(--txt);font-family:'Courier New',monospace;f
   </div>
 
   <button class="stop-btn" id="stop-btn" onclick="stopEmul()">&#9632; Stop</button>
-  <button class="stop-btn" id="pm3-conn-btn" style="border-color:var(--blue);color:var(--blue)" onclick="connectPm3()">&#9679; Connect PM3</button>
-  <button class="stop-btn" id="pm3-disc-btn" style="display:none;border-color:var(--txt3);color:var(--txt3)" onclick="disconnectPm3()">&#9632; PM3</button>
 </div>
 
 <!-- Main -->
@@ -515,13 +513,7 @@ function showBinary(name) {
   }
 }
 
-function connectPm3() {
-  send({action:'connect_pm3'});
-  setDot('dot-pm3', null);
-  const btn = document.getElementById('pm3-conn-btn');
-  if (btn) btn.textContent = '… Connecting';
-}
-function disconnectPm3() { send({action:'disconnect_pm3'}); }
+function connectPm3() { send({action:'connect_pm3'}); }
 function checkPm3Version() { send({action:'pm3_version'}); }
 function installPm3() {
   const btn = document.getElementById('install-btn');
@@ -533,9 +525,6 @@ function installPm3() {
 
 function syncPm3(connected) {
   setDot('dot-pm3', !!connected);
-  document.getElementById('pm3-conn-btn').style.display = connected ? 'none' : '';
-  document.getElementById('pm3-conn-btn').textContent = '● Connect PM3';
-  document.getElementById('pm3-disc-btn').style.display = connected ? '' : 'none';
 }
 
 function scanNetwork() {

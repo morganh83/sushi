@@ -83,13 +83,15 @@ async def do_clone(card: dict, mode: str) -> None:
 # ── Background poller ──────────────────────────────────────────────────────
 
 async def poll_loop() -> None:
+    pm3_open: bool = False
+    pm3_check_counter: int = 0
+
     while True:
-        # Check if pm3 process died since last poll
-        was_connected = proxmark._connected
-        still_alive = proxmark.check_alive()
-        if was_connected and not still_alive:
-            log.warning("PM3 session died — waiting for reconnect")
-            await broadcast({"type": "pm3_disconnected"})
+        # Check CBP port every 5 poll cycles (~5 s at default interval)
+        pm3_check_counter += 1
+        if pm3_check_counter >= 5:
+            pm3_check_counter = 0
+            pm3_open = await proxmark.port_open()
 
         try:
             cards = await doppelganger.get_cards()
@@ -104,7 +106,7 @@ async def poll_loop() -> None:
                 "cards": cards,
                 "emulating": proxmark.is_emulating,
                 "emulating_card": proxmark.emulating_card,
-                "pm3_connected": proxmark.is_connected,
+                "pm3_connected": pm3_open,
             }
             if new_cards:
                 event["new_cards"] = new_cards
@@ -120,7 +122,7 @@ async def poll_loop() -> None:
                 "type": "status",
                 "doppelganger": "disconnected",
                 "error": str(e),
-                "pm3_connected": proxmark.is_connected,
+                "pm3_connected": pm3_open,
             })
         except Exception as e:
             log.error("Poll error: %s", e)
@@ -139,7 +141,6 @@ async def lifespan(app: Starlette):
     task.cancel()
     await doppelganger.close()
     await proxmark.stop_emulation()
-    await proxmark.disconnect()
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────
@@ -157,6 +158,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
         except Exception:
             cards = []
 
+        pm3_open = await proxmark.port_open()
         await ws.send_text(json.dumps({
             "type": "init",
             "config": config.to_dict(),
@@ -164,7 +166,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
             "emulating": proxmark.is_emulating,
             "emulating_card": proxmark.emulating_card,
             "pm3_binary": proxmark.binary,
-            "pm3_connected": proxmark.is_connected,
+            "pm3_connected": pm3_open,
         }))
 
         while True:
@@ -193,20 +195,15 @@ async def _handle(data: dict) -> None:
         await broadcast({"type": "emulation_stopped", **result})
 
     elif action == "connect_pm3":
-        await broadcast({"type": "pm3_connecting"})
-        result = await proxmark.connect()
-        banner = result.get("banner", "").strip()
+        # Now just a port check — no persistent session needed
+        open_ = await proxmark.port_open()
         await broadcast({
             "type": "pm3_connect_result",
-            "connected": result["success"],
-            "error": result.get("error", ""),
+            "connected": open_,
             "binary": proxmark.binary,
-            "banner": banner,
+            "banner": "CBP port reachable" if open_ else "CBP port not reachable — is Communication Bridge Pro running?",
+            "error": "" if open_ else "Port not open",
         })
-
-    elif action == "disconnect_pm3":
-        await proxmark.disconnect()
-        await broadcast({"type": "pm3_disconnected"})
 
     elif action == "update_config":
         config.update(data.get("data", {}))
@@ -220,6 +217,13 @@ async def _handle(data: dict) -> None:
     elif action == "detect_pm3":
         binary = proxmark.redetect()
         await broadcast({"type": "pm3_detected", "binary": binary, "found": bool(binary)})
+
+    elif action == "ping_proxmark":
+        # Full test: run hw version via one-shot command
+        result = await proxmark.run_command("hw version", timeout=10.0)
+        ok = result["success"] or "PROXMARK" in result["output"].upper()
+        await broadcast({"type": "pm3_ping", "connected": ok,
+                         "binary": proxmark.binary, "output": result["output"]})
 
     elif action == "pm3_version":
         version = await proxmark.get_client_version()
