@@ -65,6 +65,42 @@ class DoppelgangerClient:
         except Exception as e:
             return {"url": url, "status": None, "content": "", "length": 0, "error": str(e)}
 
+    def _parse_csv_debug(self, content: str) -> tuple[list[dict], list[str]]:
+        """Parse CSV and return (cards, debug_lines) showing what happened to each row."""
+        log: list[str] = []
+        content = content.strip()
+        if not content:
+            log.append("CSV content is empty")
+            return [], log
+
+        reader = csv.reader(io.StringIO(content))
+        rows = [r for r in reader if any(c.strip() for c in r)]
+        log.append(f"Total non-empty rows: {len(rows)}")
+        if not rows:
+            return [], log
+
+        first = [c.strip().upper() for c in rows[0]]
+        has_header = any(col in first for col in ("BL", "FC", "CN", "TYPE", "TOKEN", "HEX"))
+        log.append(f"Row 0 (raw): {rows[0]}")
+        log.append(f"Row 0 (upper): {first}")
+        log.append(f"Header detected: {has_header}")
+
+        header = first if has_header else None
+        data_rows = rows[1:] if has_header else rows
+        log.append(f"Data rows to parse: {len(data_rows)}")
+
+        cards = []
+        for i, raw_row in enumerate(data_rows):
+            row = [c.strip() for c in raw_row]
+            card = self._parse_row(row, header)
+            if card:
+                log.append(f"Row {i}: OK → {card.get('id')}")
+                cards.append(card)
+            else:
+                log.append(f"Row {i}: SKIPPED → {row[:5]}")
+
+        return cards, log
+
     def _parse_csv(self, content: str) -> list[dict]:
         content = content.strip()
         if not content:

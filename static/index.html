@@ -402,13 +402,20 @@ function handle(m) {
           el.textContent = `ERROR: ${m.error}\nURL: ${m.url}`;
           el.style.color = 'var(--red)';
         } else {
-          const parsedLine = m.parsed_count !== undefined
-            ? `\nParsed: ${m.parsed_count} card(s)` + (m.parse_error ? ` (error: ${m.parse_error})` : '')
-              + (m.first_parsed ? `\nFirst card: ${JSON.stringify(m.first_parsed)}` : '')
-            : '';
+          const debugBlock = m.debug_lines ? '\n\n── Parser debug ──\n' + m.debug_lines.join('\n') : '';
           el.style.color = 'var(--txt2)';
-          el.textContent = `URL: ${m.url}\nHTTP ${m.status}  ${m.length} bytes${parsedLine}\n${'─'.repeat(40)}\n${m.content || '(empty — no cards written yet?)'}`;
+          el.textContent =
+            `URL: ${m.url}\nHTTP ${m.status}  ${m.length} bytes`
+            + (m.parsed_count !== undefined ? `\nParsed: ${m.parsed_count} card(s)` : '')
+            + `\n${'─'.repeat(40)}\n${m.content || '(empty)'}`
+            + debugBlock;
         }
+      }
+      // Also log debug lines to activity so they're visible without opening settings
+      if (m.debug_lines) {
+        addLog(`Core CSV: HTTP ${m.status}, ${m.length}b, parsed ${m.parsed_count ?? '?'} card(s)`,
+               m.parsed_count > 0 ? 'ok' : 'wn');
+        m.debug_lines.forEach(l => addLog('  ' + l, 'in'));
       }
       break;
     }
