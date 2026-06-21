@@ -300,7 +300,8 @@ async def _run_install() -> None:
          f"printf 'PLATFORM=PM3RDV4\\nPLATFORM_EXTRAS=BTADDON\\n' > {clone_dir}/Makefile.platform", False),
         # host target = client tools only; no ARM cross-compiler required in Termux
         ("Building client (make host)…",      f"make -C {clone_dir} host -j$(nproc)", False),
-        ("Linking pm3 to PATH…",
+        ("Linking proxmark3 and pm3 to PATH…",
+         f"ln -sf {clone_dir}/client/proxmark3 {prefix}/bin/proxmark3 && "
          f"ln -sf {clone_dir}/pm3 {prefix}/bin/pm3", False),
     ]
 

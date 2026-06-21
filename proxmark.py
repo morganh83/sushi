@@ -17,6 +17,7 @@ import asyncio
 import re
 import shutil
 import socket
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -29,15 +30,32 @@ def _clean(raw: bytes | str) -> str:
     return ANSI.sub("", raw)
 
 
-def detect_binary() -> str:
-    """Return 'proxmark3' or 'pm3' if found in PATH, else ''.
+def _binary_usable(name: str) -> bool:
+    """Return True if this binary can be invoked without a permissions error.
 
-    proxmark3 is the actual ELF binary; pm3 is a shell wrapper that scans
-    /dev/tty* on startup, which fails without root on Android.
-    Since we always pass -p, either binary works — but proxmark3 is safer.
+    The pm3 shell script scans /dev/tty* even for help flags, producing
+    '[!!] Script cannot access /dev/ttyXXX files, insufficient privileges'
+    on non-rooted Android.  The proxmark3 ELF binary does not do this.
     """
+    path = shutil.which(name)
+    if not path:
+        return False
+    try:
+        result = subprocess.run(
+            [path, "-h"],
+            capture_output=True, text=True, timeout=3,
+        )
+        output = result.stdout + result.stderr
+        return ("Script cannot access" not in output
+                and "insufficient privileges" not in output)
+    except Exception:
+        return False
+
+
+def detect_binary() -> str:
+    """Return the first usable proxmark3 binary (no permissions error)."""
     for name in ("proxmark3", "pm3"):
-        if shutil.which(name):
+        if _binary_usable(name):
             return name
     return ""
 
