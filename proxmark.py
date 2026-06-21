@@ -9,6 +9,7 @@ new connect/disconnect for every card operation.
 import asyncio
 import re
 import shutil
+from pathlib import Path
 from typing import Optional
 
 ANSI = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
@@ -193,21 +194,49 @@ class ProxmarkClient:
     # ── Version / install helpers ─────────────────────────────────────────
 
     async def get_client_version(self) -> str:
-        """Try common help/version flags and return the first useful output."""
-        if not self.binary:
-            return "No binary found. Install pm3 or proxmark3."
-        for flag in ("-v", "--version", "-h", "--help"):
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    self.binary, flag,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT,
-                )
-                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
-                text = _clean(stdout).strip()
-                lines = [l for l in text.splitlines() if l.strip()]
-                if lines:
-                    return f"[{self.binary} {flag}]\n" + "\n".join(lines[:12])
-            except Exception:
-                continue
-        return f"Could not get version info from '{self.binary}'"
+        """
+        Get client version using the proxmark3 binary directly.
+
+        The pm3 launcher is a shell script that scans /dev/tty* when no -p port
+        is given, which requires root on Android and fails with a privileges error.
+        The underlying proxmark3 ELF binary does not do device scanning and works
+        fine for version checks without a device connection.
+        """
+        home = Path.home()
+
+        # Prefer the actual ELF binary, not the pm3 wrapper script
+        candidates: list[str] = []
+        src = home / "proxmark3" / "client" / "proxmark3"
+        if src.exists():
+            candidates.append(str(src))
+        pkg = shutil.which("proxmark3")
+        if pkg:
+            candidates.append(pkg)
+        if not candidates and self.binary:
+            candidates.append(self.binary)
+        if not candidates:
+            return "No binary found. Run 'pkg install proxmark3' or use the install button."
+
+        for binary in candidates:
+            for flag in ("-v", "--version"):
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        binary, flag,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.STDOUT,
+                    )
+                    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+                    text = _clean(stdout).strip()
+                    # Filter out the pm3 script's privileges error in case it slips through
+                    lines = [
+                        l for l in text.splitlines()
+                        if l.strip()
+                        and "Script cannot access" not in l
+                        and "insufficient privileges" not in l
+                    ]
+                    if lines:
+                        return f"[{Path(binary).name} {flag}]\n" + "\n".join(lines[:10])
+                except Exception:
+                    continue
+
+        return "Could not get version info. Try 'proxmark3 -v' directly in Termux."
