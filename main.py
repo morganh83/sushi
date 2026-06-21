@@ -195,11 +195,13 @@ async def _handle(data: dict) -> None:
     elif action == "connect_pm3":
         await broadcast({"type": "pm3_connecting"})
         result = await proxmark.connect()
+        banner = result.get("banner", "").strip()
         await broadcast({
             "type": "pm3_connect_result",
             "connected": result["success"],
             "error": result.get("error", ""),
             "binary": proxmark.binary,
+            "banner": banner,
         })
 
     elif action == "disconnect_pm3":

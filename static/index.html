@@ -331,8 +331,12 @@ function handle(m) {
     case 'pm3_connect_result':
       syncPm3(m.connected);
       showBinary(m.binary||'');
+      if (m.banner) {
+        // Show each non-empty banner line in the activity log
+        m.banner.split('\n').filter(l=>l.trim()).forEach(l => addLog(l, 'in'));
+      }
       if (m.connected) {
-        addLog('PM3 connected','ok');
+        addLog('PM3 connected ✓','ok');
         toast('PM3 connected','ok');
       } else {
         addLog(`PM3 connect failed: ${m.error}`,'er');

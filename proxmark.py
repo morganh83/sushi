@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Optional
 
 ANSI = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
-PM3_PROMPT = b"pm3 --> "
 
 
 def _clean(raw: bytes | str) -> str:
@@ -63,10 +62,10 @@ class ProxmarkClient:
     # ── Connection lifecycle ──────────────────────────────────────────────
 
     async def connect(self) -> dict:
-        """Start a persistent pm3 session and wait for the first prompt."""
+        """Start a persistent pm3 session and wait for the interactive prompt."""
         await self.disconnect()
         if not self.binary:
-            return {"success": False, "error": "pm3 binary not found in PATH."}
+            return {"success": False, "error": "pm3 binary not found in PATH.", "banner": ""}
         try:
             self._proc = await asyncio.create_subprocess_exec(
                 self.binary, "-p", self.config.pm3_device,
@@ -74,20 +73,27 @@ class ProxmarkClient:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
             )
-            # Drain banner text until the first prompt
-            await asyncio.wait_for(self._drain_to_prompt(), timeout=15.0)
+            banner = await asyncio.wait_for(self._drain_to_prompt(), timeout=15.0)
             self._connected = True
-            return {"success": True}
+            return {"success": True, "banner": banner}
         except asyncio.TimeoutError:
+            # Grab whatever output arrived before timing out so user can diagnose
+            partial = ""
+            if self._proc:
+                try:
+                    raw = await asyncio.wait_for(self._proc.stdout.read(4096), timeout=0.5)
+                    partial = _clean(raw)
+                except Exception:
+                    pass
             await self.disconnect()
-            return {"success": False,
-                    "error": "Timed out waiting for pm3 prompt — is Communication Bridge Pro connected to the Blueshark?"}
+            return {"success": False, "banner": partial,
+                    "error": "Timed out — is Communication Bridge Pro running and connected to Blueshark?"}
         except FileNotFoundError:
             self.binary = ""
-            return {"success": False, "error": f"Binary not found: {self.binary}"}
+            return {"success": False, "banner": "", "error": "Binary not found."}
         except Exception as e:
             await self.disconnect()
-            return {"success": False, "error": str(e)}
+            return {"success": False, "banner": "", "error": str(e)}
 
     async def disconnect(self) -> None:
         """Gracefully shut down the pm3 session."""
@@ -119,14 +125,36 @@ class ProxmarkClient:
     # ── Internal I/O ─────────────────────────────────────────────────────
 
     async def _drain_to_prompt(self) -> str:
-        """Read stdout until pm3 prompt appears. Returns everything read."""
-        try:
-            data = await self._proc.stdout.readuntil(PM3_PROMPT)
-            return _clean(data)
-        except asyncio.IncompleteReadError as e:
-            # Stream closed before prompt — process probably died
-            self._connected = False
-            return _clean(e.partial)
+        """
+        Read banner text until pm3 is at its interactive prompt.
+
+        The iceman fork wraps prompt components in ANSI colour codes, so the
+        raw bytes for '[bt] pm3 --> ' may look like
+        '\x1b[32m[bt]\x1b[0m \x1b[1mpm3\x1b[0m --> '.
+        Searching for the literal bytes b'pm3 --> ' is therefore unreliable.
+
+        Instead: read chunks with a short per-chunk timeout.  When no output
+        arrives for 1 second after receiving some data, the prompt is waiting
+        and we return.  We also check the ANSI-stripped text for 'pm3 -->'
+        so we exit immediately when it is visible without waiting the full second.
+        """
+        buf = b""
+        while True:
+            try:
+                chunk = await asyncio.wait_for(
+                    self._proc.stdout.read(4096), timeout=1.0
+                )
+                if not chunk:
+                    break
+                buf += chunk
+                if "pm3 -->" in _clean(buf):
+                    break
+            except asyncio.TimeoutError:
+                if buf:
+                    # Had output, now quiet — prompt is waiting
+                    break
+                # No output yet — keep waiting (outer timeout handles overall limit)
+        return _clean(buf)
 
     # ── Commands ──────────────────────────────────────────────────────────
 
