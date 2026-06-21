@@ -226,6 +226,10 @@ async def _handle(data: dict) -> None:
         await broadcast({"type": "pm3_version_result", "version": version,
                          "binary": proxmark.binary})
 
+    elif action == "test_core":
+        result = await doppelganger.get_raw_csv()
+        await broadcast({"type": "core_raw_csv", **result})
+
     elif action == "scan_network":
         await broadcast({"type": "scan_started", "target": "core"})
         results = await scan_for_core()

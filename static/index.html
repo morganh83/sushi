@@ -203,8 +203,24 @@ body{background:var(--bg);color:var(--txt);font-family:'Courier New',monospace;f
         <input class="fi" id="cfg-ip" type="text" placeholder="192.168.4.1" inputmode="url" style="flex:1">
         <button class="test-btn" id="scan-net-btn" onclick="scanNetwork()" style="width:auto;margin:0;padding:8px 12px;white-space:nowrap">Scan</button>
       </div>
-      <div class="fh">Tap Scan to auto-find the Core on your hotspot network.</div>
+      <div class="fh">Tap Scan to auto-find the Core on your hotspot network. Results are saved automatically.</div>
       <div id="scan-net-results" style="margin-top:6px;display:flex;flex-direction:column;gap:4px"></div>
+    </div>
+
+    <div class="fg">
+      <label class="fl">Core Diagnostic (raw cards.csv)</label>
+      <button class="test-btn" onclick="testCore()">Fetch raw CSV from Core</button>
+      <pre id="core-csv-out" style="display:none;margin-top:6px;background:var(--s2);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-size:10px;color:var(--txt2);max-height:160px;overflow-y:auto;white-space:pre-wrap;word-break:break-all"></pre>
+      <div class="fh">Shows the exact URL and raw CSV response from the Core. Use this to confirm the IP is correct and the CSV format matches what Sushi expects.</div>
+    </div>
+
+    <div class="fg">
+      <label class="fl">Notifications</label>
+      <div style="display:flex;gap:6px;align-items:center">
+        <span id="notif-status" style="flex:1;font-size:12px;padding:9px 11px;background:var(--s2);border:1px solid var(--border);border-radius:6px;color:var(--txt3)">checking…</span>
+        <button class="test-btn" onclick="requestNotifPerm()" style="width:auto;margin:0;padding:8px 12px;white-space:nowrap">Enable</button>
+      </div>
+      <div class="fh">Browser notifications + haptic vibration when a new card is captured. Grant permission then keep the browser tab open.</div>
     </div>
 
     <!-- PM3 settings -->
@@ -378,6 +394,20 @@ function handle(m) {
       addLog(`PM3 test: ${ok?'OK ✓':'FAIL ✗'} ${(m.output||'').split('\n')[0]||''}`, ok?'ok':'er');
       break;
     }
+    case 'core_raw_csv': {
+      const el = document.getElementById('core-csv-out');
+      if (el) {
+        el.style.display = '';
+        if (m.error) {
+          el.textContent = `ERROR: ${m.error}\nURL: ${m.url}`;
+          el.style.color = 'var(--red)';
+        } else {
+          el.style.color = 'var(--txt2)';
+          el.textContent = `URL: ${m.url}\nHTTP: ${m.status}  Length: ${m.length} bytes\n${'─'.repeat(40)}\n${m.content || '(empty)'}`;
+        }
+      }
+      break;
+    }
     case 'scan_started':
       if (m.target==='core') { document.getElementById('scan-net-results').innerHTML = '<div style="color:var(--txt3);font-size:11px">Scanning…</div>'; }
       break;
@@ -390,7 +420,11 @@ function handle(m) {
 // ── Card rendering ────────────────────────────────────────────────────────
 function updateCards(c, newOnes) {
   cards = c;
-  newOnes.forEach(n => { newIds.add(n.id); toast(`New: ${cardLabel(n)}`,'in'); });
+  newOnes.forEach(n => {
+    newIds.add(n.id);
+    toast(`New: ${cardLabel(n)}`,'in');
+    notifyNewCard(n);
+  });
   document.getElementById('cnt').textContent = cards.length;
   render();
 }
@@ -507,10 +541,53 @@ function renderScanResults(devices) {
   ).join('');
 }
 
+function testCore()  { send({action:'test_core'}); }
+
 function pickCoreIp(ip) {
   document.getElementById('cfg-ip').value = ip;
   document.getElementById('scan-net-results').innerHTML = '';
-  addLog(`Core IP set to ${ip}`,'ok');
+  // Auto-save so the IP takes effect without requiring a manual Save tap
+  send({action:'update_config', data:{doppelganger_ip: ip}});
+  addLog(`Core IP set to ${ip} and saved`,'ok');
+}
+
+// ── Notifications ──────────────────────────────────────────────────────────
+function updateNotifStatus() {
+  const el = document.getElementById('notif-status');
+  if (!el) return;
+  if (!('Notification' in window)) {
+    el.textContent = 'Not supported in this browser';
+    el.style.color = 'var(--txt3)';
+    return;
+  }
+  const perm = Notification.permission;
+  el.textContent = perm === 'granted' ? 'Enabled ✓'
+                 : perm === 'denied'  ? 'Blocked — allow in browser settings'
+                                      : 'Not yet enabled';
+  el.style.color = perm === 'granted' ? 'var(--green)'
+                 : perm === 'denied'  ? 'var(--red)'
+                                      : 'var(--txt3)';
+}
+
+async function requestNotifPerm() {
+  if (!('Notification' in window)) { addLog('Notifications not supported','wn'); return; }
+  const perm = await Notification.requestPermission();
+  updateNotifStatus();
+  addLog(`Notification permission: ${perm}`, perm === 'granted' ? 'ok' : 'wn');
+}
+
+function notifyNewCard(card) {
+  // Haptic feedback on Android
+  if ('vibrate' in navigator) navigator.vibrate([150, 80, 150]);
+
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  const label = cardLabel(card);
+  const body = card.card_type === 'paxton'
+    ? `Token: ${card.token}`
+    : `FC: ${card.fc}   CN: ${card.cn}`;
+  try {
+    new Notification('Card captured — ' + label, { body, silent: true });
+  } catch(_) {}
 }
 
 
@@ -554,7 +631,7 @@ function applyConfig(cfg) {
   if (dt) dt.value = cfg.pm3_device_type || 'rdv4_bt';
 }
 
-function openSettings()  { document.getElementById('modal').classList.add('open'); }
+function openSettings()  { document.getElementById('modal').classList.add('open'); updateNotifStatus(); }
 function closeSettings() { document.getElementById('modal').classList.remove('open'); }
 
 function saveSettings() {
@@ -591,6 +668,7 @@ function toast(msg, type='in') {
 
 // ── Boot ──────────────────────────────────────────────────────────────────
 connect();
+updateNotifStatus();
 </script>
 </body>
 </html>

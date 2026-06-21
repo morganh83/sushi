@@ -49,6 +49,22 @@ class DoppelgangerClient:
         except Exception as e:
             raise ConnectionError(f"Doppelganger unreachable: {e}")
 
+    async def get_raw_csv(self) -> dict:
+        """Fetch cards.csv and return raw content for diagnostics."""
+        url = f"{self.base_url}/cards.csv"
+        try:
+            c = await self._client()
+            r = await c.get(url, timeout=5.0)
+            return {
+                "url": url,
+                "status": r.status_code,
+                "content": r.text[:3000],
+                "length": len(r.text),
+                "error": None,
+            }
+        except Exception as e:
+            return {"url": url, "status": None, "content": "", "length": 0, "error": str(e)}
+
     def _parse_csv(self, content: str) -> list[dict]:
         content = content.strip()
         if not content:
