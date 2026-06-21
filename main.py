@@ -234,54 +234,115 @@ async def _handle(data: dict) -> None:
 
 
 async def _run_install() -> None:
-    """Clone and build the iceman fork; stream output line-by-line."""
+    """
+    Two-phase install:
+      Phase 1 — client only (make host, fast, no cross-compiler needed)
+      Phase 2 — firmware via proot-distro/Debian (slow, fixes version mismatch)
+    """
     home = Path.home()
     prefix = Path(os.environ.get("PREFIX", "/data/data/com.termux/files/usr"))
     clone_dir = home / "proxmark3"
 
-    steps = [
-        ("Removing pkg version (if any)…", f"pkg uninstall proxmark3 -y"),
-        ("Installing build deps…",
-         "pkg install -y git clang make cmake python libc++"),
-        ("Cloning iceman fork…",
-         f"git clone --depth=1 https://github.com/RfidResearchGroup/proxmark3 {clone_dir}"),
-        ("Building (this takes several minutes)…",
-         f"make -C {clone_dir} -j$(nproc)"),
-        ("Linking pm3 to PATH…",
-         f"ln -sf {clone_dir}/pm3 {prefix}/bin/pm3"),
-    ]
+    env = {**os.environ, "DEBIAN_FRONTEND": "noninteractive"}
 
-    await broadcast({"type": "install_log", "line": "=== Starting iceman fork install ===",
-                     "done": False})
-
-    for label, cmd in steps:
+    async def run_step(label: str, cmd: str, allow_fail: bool = False) -> bool:
         await broadcast({"type": "install_log", "line": f"\n-- {label}", "done": False})
         try:
             proc = await asyncio.create_subprocess_shell(
-                cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                env={**os.environ, "DEBIAN_FRONTEND": "noninteractive"},
+                cmd, stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT, env=env,
             )
             async for raw in proc.stdout:
-                line = raw.decode("utf-8", errors="replace").rstrip()
-                await broadcast({"type": "install_log", "line": line, "done": False})
-            await proc.wait()
-            if proc.returncode != 0:
                 await broadcast({"type": "install_log",
-                                 "line": f"FAILED (exit {proc.returncode})", "done": True,
-                                 "success": False})
-                return
+                                 "line": raw.decode("utf-8", errors="replace").rstrip(),
+                                 "done": False})
+            await proc.wait()
+            if proc.returncode != 0 and not allow_fail:
+                await broadcast({"type": "install_log",
+                                 "line": f"FAILED (exit {proc.returncode})",
+                                 "done": True, "success": False})
+                return False
+            return True
         except Exception as e:
             await broadcast({"type": "install_log", "line": f"ERROR: {e}",
                              "done": True, "success": False})
+            return False
+
+    # ── Phase 1: Build client (host tools only) ───────────────────────────
+    await broadcast({"type": "install_log",
+                     "line": "=== Phase 1: Building client (host tools) ===", "done": False})
+
+    phase1 = [
+        ("Removing pkg version (if any)…",    "pkg uninstall proxmark3 -y", True),
+        ("Installing build deps…",             "pkg install -y git clang make cmake python libc++", False),
+        ("Cloning iceman fork…",
+         f"git clone --depth=1 https://github.com/RfidResearchGroup/proxmark3 {clone_dir}", False),
+        # Write platform config — CRITICAL: BTADDON ensures firmware + client match
+        ("Writing Makefile.platform (RDV4 + Blueshark)…",
+         f"printf 'PLATFORM=PM3RDV4\\nPLATFORM_EXTRAS=BTADDON\\n' > {clone_dir}/Makefile.platform", False),
+        # host target = client tools only; no ARM cross-compiler required in Termux
+        ("Building client (make host)…",      f"make -C {clone_dir} host -j$(nproc)", False),
+        ("Linking pm3 to PATH…",
+         f"ln -sf {clone_dir}/pm3 {prefix}/bin/pm3", False),
+    ]
+
+    for label, cmd, allow_fail in phase1:
+        if not await run_step(label, cmd, allow_fail):
             return
 
-    # Re-detect binary after install
     binary = proxmark.redetect()
     await broadcast({"type": "install_log",
-                     "line": f"\n=== Done. Binary: {binary or 'NOT FOUND'} ===",
-                     "done": True, "success": bool(binary)})
+                     "line": f"\n=== Phase 1 done. Client binary: {binary or 'NOT FOUND'} ===\n",
+                     "done": False})
+
+    # ── Phase 2: Build firmware via proot-distro + Debian ────────────────
+    await broadcast({"type": "install_log",
+                     "line": "=== Phase 2: Building firmware (RDV4 + BTADDON) via proot-distro ===",
+                     "done": False})
+    await broadcast({"type": "install_log",
+                     "line": "    This fixes the 'firmware does not match' error.", "done": False})
+    await broadcast({"type": "install_log",
+                     "line": "    Takes ~20-30 min. Do NOT close the app.\n", "done": False})
+
+    fw_cmd = (
+        f"proot-distro login debian --termux-home -- bash -c '"
+        f"apt-get update -qq && "
+        f"apt-get install -y gcc-arm-none-eabi libnewlib-dev libnewlib-arm-none-eabi && "
+        f"make -C {clone_dir} -j$(nproc) fullimage"
+        f"'"
+    )
+
+    phase2 = [
+        ("Installing proot-distro…",                  "pkg install -y proot-distro", False),
+        ("Installing Debian (if not already done)…",  "proot-distro install debian", True),
+        ("Building firmware in Debian (long step)…",  fw_cmd, False),
+    ]
+
+    for label, cmd, allow_fail in phase2:
+        if not await run_step(label, cmd, allow_fail):
+            return
+
+    fullimage = clone_dir / "fullimage.elf"
+    fw_found = fullimage.exists()
+
+    await broadcast({"type": "install_log",
+                     "line": f"\n=== Phase 2 done. Firmware: {fullimage} {'✓' if fw_found else 'NOT FOUND'} ===",
+                     "done": False})
+
+    if fw_found:
+        await broadcast({"type": "install_log", "line": "\nTo flash firmware:", "done": False})
+        await broadcast({"type": "install_log",
+                         "line": "  1. Hold side button on Proxmark3 while connecting via USB OTG",
+                         "done": False})
+        await broadcast({"type": "install_log",
+                         "line": f"  2. pm3 -p tcp:localhost:4321 --flash --image {fullimage}",
+                         "done": False})
+        await broadcast({"type": "install_log",
+                         "line": "  WARNING: Only flash fullimage, NOT bootrom, from Android.",
+                         "done": False})
+
+    await broadcast({"type": "install_log", "line": "\n=== All done ===",
+                     "done": True, "success": fw_found})
     await broadcast({"type": "pm3_detected", "binary": binary, "found": bool(binary)})
 
 

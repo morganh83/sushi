@@ -240,9 +240,13 @@ body{background:var(--bg);color:var(--txt);font-family:'Courier New',monospace;f
     </div>
 
     <div class="fg">
-      <label class="fl">Install Iceman Fork (RfidResearchGroup)</label>
-      <div class="fh" style="margin-bottom:6px">Clones and builds the latest iceman fork from source for RDV4. Takes 10&ndash;30 minutes. Replaces any existing pkg version.</div>
-      <button class="test-btn" id="install-btn" onclick="installPm3()" style="border-color:var(--orange);color:var(--orange)">Install from source</button>
+      <label class="fl">Build &amp; Flash (fixes firmware mismatch)</label>
+      <div class="fh" style="margin-bottom:6px">
+        <strong style="color:var(--orange)">Phase 1</strong> builds the client with <code style="color:var(--green)">make host</code> (~5&ndash;10 min, no cross-compiler needed).<br>
+        <strong style="color:var(--orange)">Phase 2</strong> builds the RDV4+Blueshark firmware inside a Debian proot environment (~20&ndash;30 min) — this is what fixes &ldquo;firmware does not match&rdquo;.<br>
+        After Phase 2 completes, the flash command is shown in the log. Do <strong>not</strong> flash bootrom from Android.
+      </div>
+      <button class="test-btn" id="install-btn" onclick="installPm3()" style="border-color:var(--orange);color:var(--orange)">Build client + firmware</button>
       <pre id="install-log" style="display:none;margin-top:8px;background:var(--s2);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-size:10px;color:var(--txt2);max-height:200px;overflow-y:auto;white-space:pre-wrap;word-break:break-all"></pre>
     </div>
 

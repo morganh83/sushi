@@ -80,52 +80,90 @@ Doppelganger Core  ──WiFi──>  [Sushi backend]  ──TCP──>  Communi
 
 ## Proxmark3 setup (RDV4 + Blueshark)
 
-The version of Proxmark3 in the Termux package manager (`pkg install proxmark3`) is typically outdated and may not be compiled correctly for the RDV4. You need the **iceman fork** (RfidResearchGroup/proxmark3), which is the actively maintained version with full RDV4 + Blueshark support.
+### Understanding "ARM firmware does not match"
 
-**1. Remove the package manager version if installed**
+This error means the firmware flashed onto the RDV4 was compiled at a different git revision than the client binary, **or** the firmware is missing the `PLATFORM_EXTRAS=BTADDON` flag required for Blueshark support. Both must match. The Termux pkg version (`pkg install proxmark3`) is the iceman fork and is fine as a client — the problem is almost always the firmware on the device.
 
-```bash
-pkg uninstall proxmark3
+The two required build settings for RDV4 + Blueshark:
+```
+PLATFORM=PM3RDV4
+PLATFORM_EXTRAS=BTADDON
 ```
 
-**2. Install build dependencies**
+These go in a file called `Makefile.platform` in the proxmark3 source tree before building.
+
+---
+
+### Option A — Flash from a PC (recommended)
+
+This is the most reliable path. On a PC/Mac with the iceman fork:
+
+```bash
+git clone https://github.com/RfidResearchGroup/proxmark3.git
+cd proxmark3
+printf 'PLATFORM=PM3RDV4\nPLATFORM_EXTRAS=BTADDON\n' > Makefile.platform
+make -j$(nproc) fullimage
+```
+
+Put the RDV4 in bootloader mode (hold the side button while plugging in USB — LED turns solid red), then flash:
+
+```bash
+pm3 -p /dev/ttyACM0 --flash --image fullimage.elf
+```
+
+Then ensure your Termux client is from the same version by building client-only (see Option B, Phase 1) or using `pkg install proxmark3` if it matches the tagged release you built.
+
+---
+
+### Option B — Build everything in Termux (no PC needed)
+
+Termux cannot cross-compile ARM firmware natively. Firmware compilation requires proot-distro with a Debian environment containing the ARM toolchain.
+
+**Phase 1 — Client only (fast, ~5–10 min)**
 
 ```bash
 pkg install git clang make cmake python libc++
+git clone --depth=1 https://github.com/RfidResearchGroup/proxmark3.git ~/proxmark3
+printf 'PLATFORM=PM3RDV4\nPLATFORM_EXTRAS=BTADDON\n' > ~/proxmark3/Makefile.platform
+make -C ~/proxmark3 host -j$(nproc)
+ln -sf ~/proxmark3/pm3 $PREFIX/bin/pm3
 ```
 
-**3. Clone the iceman fork**
+> Note: `make host` builds the client tools only — no ARM cross-compiler needed. Do **not** run plain `make` in Termux; it will fail trying to cross-compile firmware.
+
+**Phase 2 — Firmware via proot-distro (~20–30 min)**
 
 ```bash
-git clone https://github.com/RfidResearchGroup/proxmark3.git ~/proxmark3
-cd ~/proxmark3
+pkg install proot-distro
+proot-distro install debian
+proot-distro login debian --termux-home -- bash -c \
+  "apt-get update && apt-get install -y gcc-arm-none-eabi libnewlib-dev libnewlib-arm-none-eabi && \
+   make -C ~/proxmark3 -j\$(nproc) fullimage"
 ```
 
-**4. Build for RDV4**
-
-RDV4 is the default platform in the iceman fork, so no special flags are needed:
+This produces `~/proxmark3/fullimage.elf`. Flash it with the device in bootloader mode:
 
 ```bash
-make -j$(nproc)
+pm3 -p tcp:localhost:4321 --flash --image ~/proxmark3/fullimage.elf
 ```
 
-This takes several minutes on a phone.
+> **WARNING:** Only flash `fullimage`, never `bootrom`, from Android. A failed bootrom flash can brick the device.
 
-**5. Make `pm3` available in PATH**
+**Sushi's "Install from source" button** runs both phases automatically and shows the exact flash command once the firmware is built.
 
-```bash
-ln -s ~/proxmark3/pm3 $PREFIX/bin/pm3
-```
+---
 
-Verify it works (with Communication Bridge Pro connected):
+### Verify the connection
+
+With Communication Bridge Pro connected to the Blueshark and the correct firmware flashed:
 
 ```bash
 pm3 -p tcp:localhost:4321 -c "hw version"
 ```
 
-You should see the Proxmark3 RDV4 firmware version in the output. If it connects and shows device info, Sushi will work.
+No mismatch warning = firmware and client match. Sushi's Connect PM3 should then turn the dot green.
 
-> **Note on the TCP port format:** The iceman fork uses `tcp:localhost:4321` (single colon, no `//`). This is the default in Sushi's settings.
+> **TCP port format:** The iceman fork uses `tcp:localhost:4321` (single colon, no `//`). This is the default in Sushi's settings.
 
 ---
 
