@@ -22,8 +22,14 @@ def _clean(raw: bytes | str) -> str:
 
 
 def detect_binary() -> str:
-    """Return 'pm3' or 'proxmark3' if found in PATH, else ''."""
-    for name in ("pm3", "proxmark3"):
+    """Return 'proxmark3' or 'pm3' if found in PATH, else ''.
+
+    proxmark3 is the actual ELF binary and does not scan /dev/tty* on startup.
+    pm3 is a shell script wrapper that does device detection when no -p port
+    is given, which fails without root on Android. Since we always pass -p,
+    either works — but proxmark3 avoids the permissions issue entirely.
+    """
+    for name in ("proxmark3", "pm3"):
         if shutil.which(name):
             return name
     return ""
