@@ -17,7 +17,6 @@ import asyncio
 import re
 import shutil
 import socket
-import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -30,33 +29,28 @@ def _clean(raw: bytes | str) -> str:
     return ANSI.sub("", raw)
 
 
-def _binary_usable(name: str) -> bool:
-    """Return True if this binary can be invoked without a permissions error.
-
-    The pm3 shell script scans /dev/tty* even for help flags, producing
-    '[!!] Script cannot access /dev/ttyXXX files, insufficient privileges'
-    on non-rooted Android.  The proxmark3 ELF binary does not do this.
-    """
-    path = shutil.which(name)
-    if not path:
-        return False
-    try:
-        result = subprocess.run(
-            [path, "-h"],
-            capture_output=True, text=True, timeout=3,
-        )
-        output = result.stdout + result.stderr
-        return ("Script cannot access" not in output
-                and "insufficient privileges" not in output)
-    except Exception:
-        return False
-
-
 def detect_binary() -> str:
-    """Return the first usable proxmark3 binary (no permissions error)."""
+    """Find the proxmark3 ELF binary, preferring direct paths over wrapper scripts.
+
+    The pm3 file in PATH is a shell script that internally calls the proxmark3
+    ELF binary.  If proxmark3 is not in PATH (e.g. after pkg uninstall), the
+    script fails with 'PROXMARK3: command not found'.  We therefore look for
+    the ELF binary directly before falling back to whatever is in PATH.
+
+    Priority:
+      1. ~/proxmark3/client/proxmark3  — source build (ELF, full path)
+      2. proxmark3 in PATH             — pkg install or manual link
+      3. pm3 in PATH                   — shell wrapper (last resort)
+    """
+    src = Path.home() / "proxmark3" / "client" / "proxmark3"
+    if src.exists():
+        return str(src)
+
     for name in ("proxmark3", "pm3"):
-        if _binary_usable(name):
-            return name
+        path = shutil.which(name)
+        if path:
+            return path
+
     return ""
 
 
