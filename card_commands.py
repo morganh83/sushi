@@ -73,7 +73,14 @@ def get_pm3_command(card: dict, mode: str) -> str | None:
     # ── iCLASS ───────────────────────────────────────────────────────────
     if card_type == "iclass":
         if mode == "write":
-            return f"hf iclass encode --fc {fc} --cn {cn} --ki 0"
+            # -w (Wiegand format) is required — use the format field from the
+            # card dict if available, otherwise infer from bit length.
+            # Without -w the command uses no Wiegand encoding and will write
+            # wrong data.
+            fmt = str(card.get("format") or "").split()[0]  # e.g. "C1k35s"
+            if not fmt:
+                fmt = HID_FORMAT_MAP.get(bl, "H10301")
+            return f"hf iclass encode --ki 0 --fc {fc} --cn {cn} -w {fmt}"
         return None  # iCLASS sim requires a pre-dumped file
 
     # ── Paxton Net2 ───────────────────────────────────────────────────────
