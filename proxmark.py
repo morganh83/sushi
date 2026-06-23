@@ -102,6 +102,65 @@ class ProxmarkClient:
     async def ping(self) -> bool:
         return await self.port_open()
 
+    # ── Write verification ────────────────────────────────────────────────
+
+    async def verify_write(self, card: dict) -> dict:
+        """
+        Read the card back immediately after writing and compare to expected
+        values.  The card must stay on the Proxmark3 antenna during verification.
+
+        Returns dict with keys:
+          verified: True | False | None (None = unsupported / unreadable)
+          details:  human-readable comparison string
+          output:   raw proxmark3 output
+        """
+        card_type = str(card.get("card_type", "hid")).lower()
+        bl = int(card.get("bl") or 0)
+        exp_fc  = str(card.get("fc",  "")).strip()
+        exp_cn  = str(card.get("cn",  "")).strip()
+        exp_hex = str(card.get("hex", "")).replace(" ", "").replace("0x", "").upper()
+
+        # Choose the correct reader command
+        if card_type == "em4100" or bl == 32:
+            cmd = "lf em 410x reader"
+        elif card_type == "awid":
+            cmd = "lf awid reader"
+        elif card_type == "indala":
+            cmd = "lf indala reader"
+        elif card_type in ("mifare",):
+            cmd = "hf mf info"
+        elif card_type in ("iclass", "paxton"):
+            return {"verified": None, "details": "Verification not supported for this card type.", "output": ""}
+        else:
+            cmd = "lf hid reader"   # covers all HID/Wiegand variants
+
+        result = await self.run_command(cmd, timeout=12.0)
+        output = result["output"]
+
+        # Parse FC / CN from output (HID-family)
+        fc_match  = re.search(r'FC\s*[=:]\s*(\d+)', output, re.IGNORECASE)
+        cn_match  = re.search(r'(?:Card|CN|Card\s+Number)\s*[=:]\s*(\d+)', output, re.IGNORECASE)
+        hex_match = re.search(r'ID\s*[=:]\s*([0-9a-fA-F]+)', output, re.IGNORECASE)
+
+        if card_type == "em4100" or bl == 32:
+            if hex_match:
+                got = hex_match.group(1).upper()
+                ok  = got == exp_hex
+                return {"verified": ok, "output": output,
+                        "details": f"Expected {exp_hex}, read {got}"}
+            return {"verified": False, "output": output,
+                    "details": "Could not read EM4100 ID from card"}
+
+        if fc_match and cn_match:
+            got_fc = fc_match.group(1)
+            got_cn = cn_match.group(1)
+            ok     = (got_fc == exp_fc and got_cn == exp_cn)
+            return {"verified": ok, "output": output,
+                    "details": f"Expected FC:{exp_fc} CN:{exp_cn} — read FC:{got_fc} CN:{got_cn}"}
+
+        return {"verified": False, "output": output,
+                "details": "Card did not respond or output format not recognised — keep card on antenna and try again"}
+
     # ── One-shot command ──────────────────────────────────────────────────
 
     async def run_command(self, cmd: str, timeout: float = 30.0) -> dict:

@@ -116,17 +116,20 @@ class DoppelgangerClient:
         header = first if has_header else None
         data_rows = rows[1:] if has_header else rows
 
-        cards = []
-        seen: set[str] = set()
+        # Deduplicate by ID but track how many times each card was scanned.
+        # scan_count > 1 means the Core picked up the same credentials more
+        # than once — useful for confirming a successful clone.
+        by_id: dict[str, dict] = {}
         for row in data_rows:
             card = self._parse_row([c.strip() for c in row], header)
             if card:
                 cid = card.get("id", "")
-                if not cid or cid not in seen:
-                    if cid:
-                        seen.add(cid)
-                    cards.append(card)
-        return cards
+                if cid in by_id:
+                    by_id[cid]["scan_count"] = by_id[cid].get("scan_count", 1) + 1
+                else:
+                    card["scan_count"] = 1
+                    by_id[cid] = card
+        return list(by_id.values())
 
     def _parse_row(self, row: list[str], header: Optional[list[str]]) -> Optional[dict]:
         if not row:

@@ -172,6 +172,9 @@ body{background:var(--bg);color:var(--txt);font-family:'Courier New',monospace;f
     Captured Cards&nbsp;<span id="cnt" style="color:var(--txt2)">0</span>
     <button class="mini-btn" onclick="clearSeen()">Reset New</button>
   </div>
+  <div id="cache-banner" style="display:none;background:var(--s2);border:1px solid var(--orange);border-radius:6px;padding:7px 10px;font-size:11px;color:var(--orange);margin-bottom:8px">
+    Core offline — showing locally cached cards. Connect the Core to refresh.
+  </div>
 
   <div id="cards">
     <div class="empty">
@@ -279,7 +282,7 @@ body{background:var(--bg);color:var(--txt);font-family:'Courier New',monospace;f
 
 <script>
 // ── State ────────────────────────────────────────────────────────────────
-let ws, cards = [], newIds = new Set(), flashIds = new Set(), mode = 'emulate', autoClone = false, emulCard = null, rtimer;
+let ws, cards = [], newIds = new Set(), flashIds = new Set(), mode = 'emulate', autoClone = false, emulCard = null, rtimer, usingCache = false, verifyState = {};
 
 const FMT = {26:'H10301',27:'H10307',28:'2804W',30:'ATSW30',31:'ADT31',33:'D10202',34:'H10306',35:'C1k35s',36:'S12906',37:'H10304',46:'H800002',48:'C1k48s',56:'Avig56',32:'EM4100'};
 
@@ -307,7 +310,7 @@ function handle(m) {
   switch(m.type) {
     case 'init':
       applyConfig(m.config);
-      updateCards(m.cards||[], []);
+      updateCards(m.cards||[], [], m.using_cache||false);
       emulCard = m.emulating_card;
       syncEmul();
       showBinary(m.pm3_binary||'');
@@ -315,15 +318,29 @@ function handle(m) {
       break;
     case 'status':
       setDot('dot-dg', m.doppelganger === 'connected');
-      if (m.cards !== undefined) updateCards(m.cards, m.new_cards||[]);
+      if (m.cards !== undefined) updateCards(m.cards, m.new_cards||[], m.using_cache||false);
       emulCard = m.emulating_card;
       syncPm3(m.pm3_connected||false);
       syncEmul();
-      if (m.error) addLog(m.error,'er');
+      if (m.error && m.doppelganger !== 'connected') addLog(m.error,'wn');
       break;
     case 'pm3_start':
       addLog(`${m.mode==='emulate'?'Emulating':'Writing'}: ${m.label}`,'in');
+      if (m.mode==='write') delete verifyState[m.card?.id];
       break;
+    case 'pm3_verifying':
+      addLog(m.message,'in');
+      break;
+    case 'pm3_verify_result': {
+      const cid = m.card?.id;
+      if (cid) { verifyState[cid] = m.verified; }
+      const icon = m.verified===true?'✓ Verified':m.verified===false?'✗ Verify failed':'? Unverified';
+      addLog(`${icon}: ${m.details}`, m.verified===true?'ok':m.verified===false?'er':'in');
+      if (m.verified===true) toast(`Clone verified: ${m.label}`,'ok');
+      else if (m.verified===false) toast(`Verify failed — ${m.label}`,'er');
+      render();
+      break;
+    }
     case 'pm3_result':
       if (m.success) {
         addLog(`✓ ${m.mode==='emulate'?'Emulating':'Written'}: ${m.label}`,'ok');
@@ -428,8 +445,9 @@ function handle(m) {
 }
 
 // ── Card rendering ────────────────────────────────────────────────────────
-function updateCards(c, newOnes) {
+function updateCards(c, newOnes, cache) {
   cards = c;
+  usingCache = !!cache;
   newOnes.forEach(n => {
     newIds.add(n.id);
     flashIds.add(n.id);
@@ -437,8 +455,10 @@ function updateCards(c, newOnes) {
     notifyNewCard(n);
   });
   document.getElementById('cnt').textContent = cards.length;
+  // Cache banner
+  const banner = document.getElementById('cache-banner');
+  if (banner) banner.style.display = usingCache ? '' : 'none';
   render();
-  // Clear flash set after animation finishes (3 × 0.5 s + margin)
   if (newOnes.length > 0) {
     setTimeout(() => { flashIds.clear(); render(); }, 2000);
   }
@@ -454,10 +474,12 @@ function render() {
 }
 
 function cardHTML(c) {
-  const isFlash = flashIds.has(c.id);   // triggers animation — cleared after 2 s
-  const isNew   = newIds.has(c.id);     // keeps the NEW badge until Reset
-  const isEmul  = emulCard?.id === c.id;
-  const cls     = [isFlash?'new':'', isEmul?'emul':''].filter(Boolean).join(' ');
+  const isFlash   = flashIds.has(c.id);
+  const isNew     = newIds.has(c.id);
+  const isEmul    = emulCard?.id === c.id;
+  const verified  = verifyState[c.id];   // true / false / undefined
+  const scanCount = c.scan_count || 1;
+  const cls       = [isFlash?'new':'', isEmul?'emul':''].filter(Boolean).join(' ');
   const label   = cardLabel(c);
   const cj      = h(JSON.stringify(c));
 
@@ -469,7 +491,11 @@ function cardHTML(c) {
   }
 
   const hexLine = c.hex ? `<div class="card-hex">HEX: ${h(c.hex)}</div>` : '';
-  const tags    = (isNew ? `<span class="tag">NEW</span>` : '') + (isEmul ? `<span class="tag em">EMUL</span>` : '');
+  const verTag  = verified===true  ? `<span class="tag" style="background:var(--green)">&#10003; VERIFIED</span>`
+                : verified===false ? `<span class="tag" style="background:var(--red)">&#10007; UNVERIFIED</span>`
+                : '';
+  const cntTag  = scanCount > 1 ? `<span class="tag" style="background:var(--s3);color:var(--txt2);border:1px solid var(--border)">&#215;${scanCount}</span>` : '';
+  const tags    = (isNew ? `<span class="tag">NEW</span>` : '') + cntTag + verTag + (isEmul ? `<span class="tag em">EMUL</span>` : '');
   const stopAct = isEmul ? `<button class="act-btn stop" onclick="stopEmul()">&#9632; Stop</button>` : '';
 
   return `<div class="card ${cls}">

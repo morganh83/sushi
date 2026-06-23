@@ -15,6 +15,7 @@ from starlette.routing import Mount, Route, WebSocketRoute
 from starlette.staticfiles import StaticFiles
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+import card_store
 from card_commands import get_pm3_command, infer_card_label
 from config import Config
 from discovery import scan_for_core
@@ -79,12 +80,30 @@ async def do_clone(card: dict, mode: str) -> None:
         "success": result["success"],
     })
 
+    # Auto-verify after a successful write
+    if mode == "write" and result["success"]:
+        await broadcast({"type": "pm3_verifying", "card": card,
+                         "label": label, "message": "Verifying — keep card on antenna…"})
+        verify = await proxmark.verify_write(card)
+        await broadcast({
+            "type": "pm3_verify_result",
+            "card": card, "label": label,
+            "verified": verify["verified"],
+            "details": verify["details"],
+        })
+
 
 # ── Background poller ──────────────────────────────────────────────────────
 
 async def poll_loop() -> None:
     pm3_open: bool = False
     pm3_check_counter: int = 0
+
+    # Pre-populate seen_ids from local store so cached cards don't re-trigger
+    for c in card_store.load():
+        cid = c.get("id", "")
+        if cid:
+            seen_ids.add(cid)
 
     while True:
         # Check CBP port every 5 poll cycles (~5 s at default interval)
@@ -95,6 +114,10 @@ async def poll_loop() -> None:
 
         try:
             cards = await doppelganger.get_cards()
+
+            # Sync to local store (Core is master)
+            card_store.sync_from_core(cards)
+
             new_cards = [c for c in cards if c.get("id") and c["id"] not in seen_ids]
             for c in new_cards:
                 seen_ids.add(c["id"])
@@ -104,6 +127,7 @@ async def poll_loop() -> None:
                 "doppelganger": "connected",
                 "card_count": len(cards),
                 "cards": cards,
+                "using_cache": False,
                 "emulating": proxmark.is_emulating,
                 "emulating_card": proxmark.emulating_card,
                 "pm3_connected": pm3_open,
@@ -118,10 +142,17 @@ async def poll_loop() -> None:
             await broadcast(event)
 
         except ConnectionError as e:
+            # Core offline — serve locally stored cards
+            local = card_store.load()
             await broadcast({
                 "type": "status",
                 "doppelganger": "disconnected",
                 "error": str(e),
+                "cards": local,
+                "card_count": len(local),
+                "using_cache": True,
+                "emulating": proxmark.is_emulating,
+                "emulating_card": proxmark.emulating_card,
                 "pm3_connected": pm3_open,
             })
         except Exception as e:
@@ -159,10 +190,15 @@ async def ws_endpoint(ws: WebSocket) -> None:
             cards = []
 
         pm3_open = await proxmark.port_open()
+        # If Core is offline, use local store for initial card list
+        using_cache = len(cards) == 0 and len(card_store.load()) > 0
+        if using_cache:
+            cards = card_store.load()
         await ws.send_text(json.dumps({
             "type": "init",
             "config": config.to_dict(),
             "cards": cards,
+            "using_cache": using_cache,
             "emulating": proxmark.is_emulating,
             "emulating_card": proxmark.emulating_card,
             "pm3_binary": proxmark.binary,
