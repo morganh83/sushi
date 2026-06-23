@@ -38,7 +38,7 @@ body{background:var(--bg);color:var(--txt);font-family:'Courier New',monospace;f
 .icon-btn:active{background:var(--s3)}
 
 /* ── Controls ── */
-.ctrl{background:var(--s1);border-bottom:1px solid var(--border);padding:10px 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.ctrl{background:var(--s1);border-bottom:1px solid var(--border);padding:10px 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;position:relative}
 .ctrl-lbl{font-size:10px;color:var(--txt2);text-transform:uppercase;letter-spacing:1px;white-space:nowrap}
 
 /* Toggle */
@@ -164,6 +164,31 @@ body{background:var(--bg);color:var(--txt);font-family:'Courier New',monospace;f
   </div>
 
   <button class="stop-btn" id="stop-btn" onclick="stopEmul()">&#9632; Stop</button>
+
+  <span style="width:1px;background:var(--border);align-self:stretch;margin:0 2px"></span>
+
+  <label class="tog" title="PM3 continuous reader" style="flex-shrink:0">
+    <input type="checkbox" id="pm3r-tog" onchange="togglePm3Reader(this.checked)">
+    <div class="tog-track"></div>
+    <div class="tog-thumb"></div>
+  </label>
+  <span class="ctrl-lbl">PM3 Read</span>
+
+  <div id="pm3r-controls" style="display:none;display:flex;gap:4px;align-items:center">
+    <div class="mode-grp">
+      <button class="mode-btn" id="pm3r-lf"   onclick="setPm3Mode('lf')">LF</button>
+      <button class="mode-btn" id="pm3r-hf"   onclick="showHfMenu()">HF&#9660;</button>
+      <button class="mode-btn" id="pm3r-both" onclick="setPm3Mode('both')">Both</button>
+    </div>
+  </div>
+
+  <!-- HF type flyout -->
+  <div id="hf-menu" style="display:none;position:absolute;top:100%;left:0;background:var(--s1);border:1px solid var(--border);border-radius:6px;padding:4px;z-index:200;min-width:160px">
+    <button class="mode-btn" style="display:block;width:100%;text-align:left;padding:6px 10px" onclick="setPm3Mode('hf','iclass')">iCLASS</button>
+    <button class="mode-btn" style="display:block;width:100%;text-align:left;padding:6px 10px" onclick="setPm3Mode('hf','mifare')">MIFARE Classic</button>
+    <button class="mode-btn" style="display:block;width:100%;text-align:left;padding:6px 10px" onclick="setPm3Mode('hf','desfire')">DESFire</button>
+    <button class="mode-btn" style="display:block;width:100%;text-align:left;padding:6px 10px" onclick="setPm3Mode('hf','15693')">ISO 15693</button>
+  </div>
 </div>
 
 <!-- Main -->
@@ -282,7 +307,7 @@ body{background:var(--bg);color:var(--txt);font-family:'Courier New',monospace;f
 
 <script>
 // ── State ────────────────────────────────────────────────────────────────
-let ws, cards = [], newIds = new Set(), flashIds = new Set(), mode = 'emulate', autoClone = false, emulCard = null, rtimer, usingCache = false, verifyState = {};
+let ws, cards = [], newIds = new Set(), flashIds = new Set(), mode = 'emulate', autoClone = false, emulCard = null, rtimer, usingCache = false, verifyState = {}, pm3rLf = false, pm3rHf = '';
 
 const FMT = {26:'H10301',27:'H10307',28:'2804W',30:'ATSW30',31:'ADT31',33:'D10202',34:'H10306',35:'C1k35s',36:'S12906',37:'H10304',46:'H800002',48:'C1k48s',56:'Avig56',32:'EM4100'};
 
@@ -315,6 +340,7 @@ function handle(m) {
       syncEmul();
       showBinary(m.pm3_binary||'');
       syncPm3(m.pm3_connected||false);
+      syncPm3Reader(m.pm3_reader_lf||false, m.pm3_reader_hf||'');
       break;
     case 'status':
       setDot('dot-dg', m.doppelganger === 'connected');
@@ -323,6 +349,26 @@ function handle(m) {
       syncPm3(m.pm3_connected||false);
       syncEmul();
       if (m.error && m.doppelganger !== 'connected') addLog(m.error,'wn');
+      break;
+    case 'pm3_card': {
+      // Card detected by PM3 reader — add to list if not already there
+      const nc = m.card;
+      if (nc && !cards.find(c => c.id === nc.id)) {
+        updateCards([...cards, nc], [nc], false);
+      }
+      break;
+    }
+    case 'pm3_reader_status':
+      syncPm3Reader(m.lf||false, m.hf_type||'');
+      if (m.running) addLog(`PM3 reader started (${[m.lf?'LF':'', m.hf_type].filter(Boolean).join(', ')})`, 'ok');
+      else addLog('PM3 reader stopped', 'in');
+      break;
+    case 'pm3_dump_start':
+      addLog(`Dumping ${m.card?.card_type||'card'} — this may take a minute…`, 'in');
+      break;
+    case 'pm3_dump_result':
+      addLog(m.success ? `Dump OK (${m.card_type})` : `Dump failed (${m.card_type}): ${(m.output||'').split('\n')[0]}`,
+             m.success ? 'ok' : 'er');
       break;
     case 'pm3_start':
       addLog(`${m.mode==='emulate'?'Emulating':'Writing'}: ${m.label}`,'in');
@@ -495,8 +541,14 @@ function cardHTML(c) {
                 : verified===false ? `<span class="tag" style="background:var(--red)">&#10007; UNVERIFIED</span>`
                 : '';
   const cntTag  = scanCount > 1 ? `<span class="tag" style="background:var(--s3);color:var(--txt2);border:1px solid var(--border)">&#215;${scanCount}</span>` : '';
-  const tags    = (isNew ? `<span class="tag">NEW</span>` : '') + cntTag + verTag + (isEmul ? `<span class="tag em">EMUL</span>` : '');
+  const srcTag  = c.source === 'pm3' ? `<span class="tag" style="background:var(--blue);color:#000">PM3</span>` : '';
+  const tags    = (isNew ? `<span class="tag">NEW</span>` : '') + cntTag + srcTag + verTag + (isEmul ? `<span class="tag em">EMUL</span>` : '');
   const stopAct = isEmul ? `<button class="act-btn stop" onclick="stopEmul()">&#9632; Stop</button>` : '';
+  // Dump button for HF cards from PM3 reader (where UID only was captured)
+  const hfTypes = ['iclass','mifare','desfire','15693'];
+  const dumpAct = (c.source==='pm3' && hfTypes.includes(c.card_type) && c.card_type!=='desfire')
+    ? `<button class="act-btn" style="border-color:var(--blue);color:var(--blue)" onclick='dumpCard(${h(JSON.stringify(c))})'>&#8659; Dump</button>`
+    : '';
 
   return `<div class="card ${cls}">
     <div class="card-hdr"><span class="card-type">${label}</span><div class="tags">${tags}</div></div>
@@ -504,6 +556,7 @@ function cardHTML(c) {
     ${hexLine}
     <div class="card-acts">
       ${stopAct}
+      ${dumpAct}
       <button class="act-btn write"   onclick='clone(${cj},"write")'>Write</button>
       <button class="act-btn emul-btn" onclick='clone(${cj},"emulate")'>Emulate</button>
     </div>
@@ -540,6 +593,67 @@ function showBinary(name) {
 }
 
 function connectPm3() { send({action:'connect_pm3'}); }
+
+// ── PM3 Reader ────────────────────────────────────────────────────────────
+function togglePm3Reader(on) {
+  if (on) {
+    // Show controls, default to LF
+    document.getElementById('pm3r-controls').style.display = 'flex';
+    setPm3Mode('lf');
+  } else {
+    document.getElementById('pm3r-controls').style.display = 'none';
+    send({action:'stop_pm3_reader'});
+  }
+}
+
+let pm3rCurrentHf = 'mifare';
+function setPm3Mode(type, hfType) {
+  hideHfMenu();
+  if (type === 'lf') {
+    pm3rLf = true; pm3rHf = '';
+  } else if (type === 'hf') {
+    pm3rLf = false; pm3rHf = hfType || pm3rCurrentHf;
+    pm3rCurrentHf = pm3rHf;
+  } else if (type === 'both') {
+    pm3rLf = true; pm3rHf = pm3rCurrentHf;
+  }
+  // Update pill styles
+  ['lf','hf','both'].forEach(id => {
+    document.getElementById('pm3r-' + id)?.classList.toggle('act', type === id);
+  });
+  send({action:'start_pm3_reader', lf: pm3rLf, hf_type: pm3rHf});
+}
+
+function showHfMenu() {
+  const m = document.getElementById('hf-menu');
+  if (m) m.style.display = m.style.display === 'none' ? '' : 'none';
+}
+function hideHfMenu() {
+  const m = document.getElementById('hf-menu');
+  if (m) m.style.display = 'none';
+}
+document.addEventListener('click', e => {
+  if (!e.target.closest('#hf-menu') && !e.target.closest('#pm3r-hf')) hideHfMenu();
+});
+
+function syncPm3Reader(lf, hfType) {
+  pm3rLf = lf; pm3rHf = hfType;
+  const running = lf || !!hfType;
+  document.getElementById('pm3r-tog').checked = running;
+  document.getElementById('pm3r-controls').style.display = running ? 'flex' : 'none';
+  if (running) {
+    const type = lf && hfType ? 'both' : lf ? 'lf' : 'hf';
+    ['lf','hf','both'].forEach(id => {
+      document.getElementById('pm3r-' + id)?.classList.toggle('act', type === id);
+    });
+  }
+}
+
+function dumpCard(cardJson) {
+  const card = JSON.parse(cardJson);
+  addLog(`Requesting dump for ${card.card_type} (${card.hex})…`, 'in');
+  send({action:'pm3_dump_card', card});
+}
 function checkPm3Version() { send({action:'pm3_version'}); }
 function installPm3() {
   const btn = document.getElementById('install-btn');

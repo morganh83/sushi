@@ -20,7 +20,7 @@ from card_commands import get_pm3_command, infer_card_label
 from config import Config
 from discovery import scan_for_core
 from doppelganger import DoppelgangerClient
-from proxmark import ProxmarkClient
+from proxmark import PM3Reader, ProxmarkClient
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,6 +32,20 @@ log = logging.getLogger("sushi")
 config = Config()
 doppelganger = DoppelgangerClient(config)
 proxmark = ProxmarkClient(config)
+
+
+async def _on_pm3_card(card: dict) -> None:
+    """Callback fired by PM3Reader when a card is detected."""
+    cid = card.get("id", "")
+    if not cid or cid in seen_ids:
+        return
+    seen_ids.add(cid)
+    card_store.sync_from_core([card])   # add to local store
+    log.info("PM3 reader card: %s", cid)
+    await broadcast({"type": "pm3_card", "card": card})
+
+
+pm3_reader = PM3Reader(config, lambda: proxmark.binary, _on_pm3_card)
 
 ws_clients: set[WebSocket] = set()
 seen_ids: set[str] = set()
@@ -172,6 +186,7 @@ async def lifespan(app: Starlette):
     task.cancel()
     await doppelganger.close()
     await proxmark.stop_emulation()
+    await pm3_reader.stop()
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────
@@ -203,6 +218,8 @@ async def ws_endpoint(ws: WebSocket) -> None:
             "emulating_card": proxmark.emulating_card,
             "pm3_binary": proxmark.binary,
             "pm3_connected": pm3_open,
+            "pm3_reader_lf": pm3_reader.lf_active,
+            "pm3_reader_hf": pm3_reader.hf_type,
         }))
 
         while True:
@@ -282,6 +299,29 @@ async def _handle(data: dict) -> None:
         await broadcast({"type": "scan_started", "target": "core"})
         results = await scan_for_core()
         await broadcast({"type": "scan_result", "target": "core", "devices": results})
+
+    elif action == "start_pm3_reader":
+        lf      = bool(data.get("lf", False))
+        hf_type = str(data.get("hf_type", ""))
+        result  = await pm3_reader.start(lf=lf, hf_type=hf_type)
+        await broadcast({
+            "type": "pm3_reader_status",
+            "running": pm3_reader.is_running,
+            "lf": pm3_reader.lf_active,
+            "hf_type": pm3_reader.hf_type,
+            **result,
+        })
+
+    elif action == "stop_pm3_reader":
+        await pm3_reader.stop()
+        await broadcast({"type": "pm3_reader_status", "running": False,
+                         "lf": False, "hf_type": ""})
+
+    elif action == "pm3_dump_card":
+        card = data.get("card", {})
+        await broadcast({"type": "pm3_dump_start", "card": card})
+        result = await pm3_reader.dump(card, proxmark)
+        await broadcast({"type": "pm3_dump_result", "card": card, **result})
 
     elif action == "install_pm3":
         asyncio.create_task(_run_install())

@@ -5,6 +5,58 @@ from typing import Optional
 import httpx
 
 
+def parse_kv_row(row: list[str]) -> Optional[dict]:
+    """
+    Parse a self-describing key:value row into a card dict.
+
+    Used by both DoppelgangerClient (Core CSV) and PM3Reader (pm3 output).
+    Row columns look like: "Facility Code : 2643", "Card Number : 163271", etc.
+    """
+    kv: dict[str, str] = {}
+    for col in row:
+        col = col.strip()
+        if ": " in col:
+            key, _, val = col.partition(": ")
+            kv[key.strip().upper().replace(" ", "_")] = val.strip()
+
+    data_type = kv.get("DATA_TYPE", "CARD").upper()
+
+    if "NET2" in data_type or "PAXTON" in data_type:
+        token = kv.get("TOKEN", kv.get("CARD_NUMBER", ""))
+        return {
+            "card_type": "paxton",
+            "type_str": kv.get("FORMAT", "Net2"),
+            "token": token,
+            "hex": kv.get("HEX_VALUE", kv.get("HEX", "")),
+            "bl": "", "fc": token, "cn": "",
+            "id": f"paxton-{token}",
+        }
+
+    if "CARD" in data_type or not data_type:
+        bl   = kv.get("BIT_LENGTH", "")
+        fc   = kv.get("FACILITY_CODE", "")
+        cn   = kv.get("CARD_NUMBER", "")
+        hex_ = kv.get("HEX_VALUE", kv.get("HEX", ""))
+        bin_ = kv.get("BIN", "")
+        fmt  = kv.get("FORMAT", "")
+
+        if not any([bl, fc, cn]):
+            return None
+        try:
+            int(bl)
+        except (ValueError, TypeError):
+            return None
+
+        return {
+            "card_type": "hid",
+            "bl": bl, "fc": fc, "cn": cn,
+            "hex": hex_, "bin": bin_,
+            "format": fmt,
+            "id": f"hid-{bl}-{fc}-{cn}",
+        }
+    return None
+
+
 class DoppelgangerClient:
     def __init__(self, config) -> None:
         self.config = config
@@ -135,58 +187,11 @@ class DoppelgangerClient:
         if not row:
             return None
 
-        # ── Key:Value format ──────────────────────────────────────────────
-        # The Doppelganger Core writes each row as self-describing key:value
-        # pairs, e.g.:
-        #   DATA_TYPE: CARD, Format: C1k35s (C-1000), Bit_Length: 35,
-        #   Hex_Value: 2D4A64FB8E, Facility_Code: 2643, Card_Number: 163271, BIN: ...
+        # Key:value format — delegate to module-level helper (also used by PM3Reader)
         if ": " in row[0]:
-            kv: dict[str, str] = {}
-            for col in row:
-                col = col.strip()
-                if ": " in col:
-                    key, _, val = col.partition(": ")
-                    # Normalise: upper-case, underscores instead of spaces
-                    kv[key.strip().upper().replace(" ", "_")] = val.strip()
+            return parse_kv_row(row)
 
-            data_type = kv.get("DATA_TYPE", "CARD").upper()
 
-            # ── Paxton / Net2 ─────────────────────────────────────────────
-            if "NET2" in data_type or "PAXTON" in data_type:
-                token = kv.get("TOKEN", kv.get("CARD_NUMBER", ""))
-                return {
-                    "card_type": "paxton",
-                    "type_str": kv.get("FORMAT", "Net2"),
-                    "token": token,
-                    "hex": kv.get("HEX_VALUE", kv.get("HEX", "")),
-                    "bl": "", "fc": token, "cn": "",
-                    "id": f"paxton-{token}",
-                }
-
-            # ── HID / Wiegand ─────────────────────────────────────────────
-            if "CARD" in data_type or not data_type:
-                bl   = kv.get("BIT_LENGTH", "")
-                fc   = kv.get("FACILITY_CODE", "")
-                cn   = kv.get("CARD_NUMBER", "")
-                hex_ = kv.get("HEX_VALUE", kv.get("HEX", ""))
-                bin_ = kv.get("BIN", "")
-                fmt  = kv.get("FORMAT", "")
-
-                if not any([bl, fc, cn]):
-                    return None
-                try:
-                    int(bl)
-                except (ValueError, TypeError):
-                    return None
-
-                return {
-                    "card_type": "hid",
-                    "bl": bl, "fc": fc, "cn": cn,
-                    "hex": hex_, "bin": bin_,
-                    "format": fmt,
-                    "id": f"hid-{bl}-{fc}-{cn}",
-                }
-            return None
 
         # ── Standard column-based CSV (header or positional) ─────────────
         rd = dict(zip(header, row)) if header else {}

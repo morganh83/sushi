@@ -271,3 +271,213 @@ class ProxmarkClient:
                 except Exception:
                     continue
         return "Could not get version info. Try 'proxmark3 -v' in Termux."
+
+
+# ── PM3 Continuous Reader ──────────────────────────────────────────────────────
+
+class PM3Reader:
+    """
+    Manages long-running pm3 subprocesses for continuous card reading.
+
+    LF mode:  `lf hid reader -@`  → outputs FC/CN/BL/Format directly (clone-ready)
+    HF modes: per-protocol readers that capture UID/CSN for identification;
+              cloning HF cards then requires a separate one-shot dump command.
+    """
+
+    COOLDOWN = 5.0   # seconds before same card ID can trigger again
+
+    LF_CMD = "lf hid reader -@"
+
+    HF_CMDS: dict[str, str] = {
+        "iclass":  "hf iclass reader -@",
+        "mifare":  "hf 14a reader -@",
+        "desfire": "hf mfdes info -@",
+        "15693":   "hf 15 reader -@",
+    }
+
+    DUMP_CMDS: dict[str, str] = {
+        "iclass": "hf iclass dump --ki 0",
+        "mifare": "hf mf autopwn",
+        "15693":  "hf 15 dump",
+        # desfire intentionally omitted — needs session keys
+    }
+
+    def __init__(self, config, binary_fn, on_card) -> None:
+        self.config    = config
+        self._binary   = binary_fn   # callable → str
+        self._on_card  = on_card     # async (card: dict) -> None
+        self._tasks: list[asyncio.Task] = []
+        self._procs: list[asyncio.subprocess.Process] = []
+        self._cooldown: dict[str, float] = {}
+        self._lf_active = False
+        self._hf_type   = ""
+
+    # ── Public state ──────────────────────────────────────────────────────
+
+    @property
+    def is_running(self) -> bool:
+        return bool(self._tasks) and any(not t.done() for t in self._tasks)
+
+    @property
+    def lf_active(self) -> bool:
+        return self._lf_active and self.is_running
+
+    @property
+    def hf_type(self) -> str:
+        return self._hf_type if self.is_running else ""
+
+    # ── Lifecycle ─────────────────────────────────────────────────────────
+
+    async def start(self, lf: bool = False, hf_type: str = "") -> dict:
+        await self.stop()
+        binary = self._binary()
+        if not binary:
+            return {"success": False, "error": "proxmark3 binary not found"}
+
+        self._lf_active = lf
+        self._hf_type   = hf_type
+
+        if lf:
+            self._tasks.append(asyncio.create_task(
+                self._run_reader(self.LF_CMD, "lf")
+            ))
+        if hf_type and hf_type in self.HF_CMDS:
+            self._tasks.append(asyncio.create_task(
+                self._run_reader(self.HF_CMDS[hf_type], hf_type)
+            ))
+
+        modes = []
+        if lf:
+            modes.append("LF HID")
+        if hf_type:
+            modes.append(f"HF {hf_type}")
+
+        return {"success": True, "modes": modes}
+
+    async def stop(self) -> None:
+        self._lf_active = False
+        self._hf_type   = ""
+        for t in self._tasks:
+            t.cancel()
+        for p in self._procs:
+            try:
+                p.kill()
+            except Exception:
+                pass
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+        self._tasks.clear()
+        self._procs.clear()
+
+    # ── Streaming reader ──────────────────────────────────────────────────
+
+    async def _run_reader(self, cmd: str, mode: str) -> None:
+        binary = self._binary()
+        if not binary:
+            return
+        import logging
+        log = logging.getLogger("sushi.pm3reader")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                binary, "-p", self.config.pm3_device, "-c", cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            self._procs.append(proc)
+            buf = ""
+            async for chunk in proc.stdout:
+                line = _clean(chunk)
+                buf += line
+                # A new scan cycle starts on separator or success line
+                if "[=] ----" in buf or ("[+]" in line and len(buf) > 200):
+                    card = self._parse_block(buf, mode)
+                    if card:
+                        await self._fire(card)
+                    buf = line  # keep current line as start of next block
+                # Bound the buffer
+                if len(buf) > 8000:
+                    buf = buf[-2000:]
+            # Parse any remaining buffer
+            card = self._parse_block(buf, mode)
+            if card:
+                await self._fire(card)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            log.error("PM3Reader %s error: %s", mode, e)
+        finally:
+            try:
+                self._procs.remove(proc)
+            except Exception:
+                pass
+
+    async def _fire(self, card: dict) -> None:
+        """Check cooldown then call the on_card callback."""
+        import time
+        cid  = card.get("id", "")
+        now  = time.monotonic()
+        last = self._cooldown.get(cid, 0.0)
+        if now - last >= self.COOLDOWN:
+            self._cooldown[cid] = now
+            await self._on_card(card)
+
+    # ── Parsing ───────────────────────────────────────────────────────────
+
+    def _parse_block(self, buf: str, mode: str) -> Optional[dict]:
+        from doppelganger import parse_kv_row
+
+        if mode == "lf":
+            # pm3 LF HID output: same key:value fields as the Doppelganger Core CSV
+            # Split on newlines and treat each "Key : Value" line as a column
+            lines = [l.strip() for l in buf.splitlines() if ": " in l and "[" in l]
+            if not lines:
+                return None
+            # Strip pm3 prefix markers ([=], [+], etc.) from each line
+            cleaned = []
+            for l in lines:
+                # Remove "[=] " or "[+] " prefix
+                if "] " in l:
+                    l = l.split("] ", 1)[1]
+                cleaned.append(l)
+            card = parse_kv_row(cleaned)
+            if card:
+                card["source"] = "pm3"
+                card["scan_count"] = 1
+            return card
+
+        # HF modes — parse UID / CSN
+        uid_match = re.search(
+            r'(?:UID|CSN)\s*[=:]\s*([0-9a-fA-F](?:[0-9a-fA-F ])*[0-9a-fA-F])',
+            buf, re.IGNORECASE,
+        )
+        if not uid_match:
+            return None
+
+        uid = uid_match.group(1).replace(" ", "").upper()
+        type_map = {
+            "iclass":  ("iclass",  f"iclass-{uid}"),
+            "mifare":  ("mifare",  f"mifare-{uid}"),
+            "desfire": ("desfire", f"desfire-{uid}"),
+            "15693":   ("15693",   f"15693-{uid}"),
+        }
+        card_type, card_id = type_map.get(mode, ("hf", f"hf-{uid}"))
+        return {
+            "card_type": card_type,
+            "bl": "", "fc": "", "cn": "",
+            "hex": uid, "bin": "", "format": card_type.upper(),
+            "id": card_id,
+            "source": "pm3",
+            "scan_count": 1,
+        }
+
+    # ── One-shot dump ─────────────────────────────────────────────────────
+
+    async def dump(self, card: dict, proxmark_client) -> dict:
+        """Run the appropriate dump command for an HF card."""
+        card_type = card.get("card_type", "")
+        cmd = self.DUMP_CMDS.get(card_type)
+        if not cmd:
+            return {"success": False, "output": f"No dump command for {card_type}",
+                    "card_type": card_type}
+        result = await proxmark_client.run_command(cmd, timeout=120.0)
+        return {**result, "card_type": card_type}
